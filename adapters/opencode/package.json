@@ -7,9 +7,6 @@
     "./server": "./dist/server.js"
   },
   "files": ["dist"],
-  "dependencies": {
-    "@agent-atexit/core": "workspace:*"
-  },
   "engines": {
     "node": ">=18",
     "opencode": ">=1.18.27"

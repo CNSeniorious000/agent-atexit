@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { ActionStore, resolveStateRoot, type RunRecord, type SessionBinding } from "@agent-atexit/core";
+import { ActionStore, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
 import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 
 const root = resolveStateRoot();
@@ -69,4 +69,3 @@ const plugin: PluginModule = {
 };
 
 export default plugin;
-

@@ -9,10 +9,16 @@
     "build": "bun run scripts/build.ts",
     "check": "bun run typecheck && bun run build && bun test",
     "pack:kimi": "bun run build && bun run scripts/package-kimi.ts",
+    "pack:npm": "bun run build && bun run scripts/package-npm.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-agent": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-attachment": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "3.18.2",
     "@opencode-ai/plugin": "^1.18.27",
     "@types/bun": "^1.3.10",
     "fflate": "^0.8.2",

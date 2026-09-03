@@ -1,0 +1,4 @@
+- insert:
+    - id: atexit
+      name: '@agent-atexit/dsh'
+

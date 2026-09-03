@@ -8,3 +8,4 @@ function valueAfter(flag: string): string {
 }
 
 await executeRun(valueAfter("--state-dir"), valueAfter("--run-id"));
+
