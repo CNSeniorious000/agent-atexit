@@ -26,11 +26,11 @@ The plugin uses a scoped MCP server and `PostToolUse`/`SessionEnd` command hooks
 
 ### Codex
 
-Codex uses the same hook script and the Agent Plugins MCP schema. A task switch does not immediately close a thread; `SessionEnd` fires when the root thread is closed, archived, deleted, or unloaded after the documented idle period. Plugin hooks require hash-based user trust. SessionEnd is synchronous and capped at three seconds.
+Codex uses the same hook script and a plugin-relative bundled MCP command. The legacy bundled-MCP format does not expose `PLUGIN_DATA` to the server, so both the MCP server and Codex hook deliberately use the XDG state fallback. A task switch does not immediately close a thread; `SessionEnd` fires when the root thread is closed, archived, deleted, or unloaded after the documented idle period. Plugin hooks require hash-based user trust. SessionEnd is synchronous and capped at three seconds.
 
 ### Kimi Code
 
-Kimi's workspace MCP connection is not session-scoped and tool calls carry no protocol-level session ID. `PostToolUse` therefore binds the returned capability ID to Kimi's authoritative hook `session_id`. `SessionEnd` reports `exit` or `archive`. The TUI's emergency `SIGHUP` path can bypass cleanup, and non-interactive shutdown is separately bounded.
+Kimi's workspace MCP connection is not session-scoped and tool calls carry no protocol-level session ID. Kimi also ignores MCP approval metadata and does not support MCP elicitation. The adapter therefore requires a fresh UUID `approval_id`: a real `PermissionResult` hook writes a five-second, one-time proof containing the authoritative session ID and exact tool-input hash, and the MCP handler must atomically consume it before creating a bound registration. Auto-approved, cached, stale, replayed, or mismatched calls fail closed. `SessionEnd` reports `exit` or `archive`. The TUI's emergency `SIGHUP` path can bypass cleanup, and non-interactive shutdown is separately bounded.
 
 ### OpenCode
 
@@ -39,4 +39,3 @@ The native tool context supplies `sessionID`, so no MCP binding bridge is needed
 ### dsh
 
 The native tool context supplies an owning Agent. The adapter installs exactly one async disposer in that Agent's `ctx.effect`; individual actions are kept inside that disposer and drained serially because separate Cordis effects may complete concurrently. A `tools/pre-execute` policy returns `ask` for `atexit_register`, so absent approval infrastructure fails closed.
-

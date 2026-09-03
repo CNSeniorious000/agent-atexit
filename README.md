@@ -7,7 +7,7 @@
 
 ## Tools
 
-- `atexit_register({ argv, cwd?, key?, timeout_ms? })` registers one command without invoking a shell. A newer pending command with the same `key` replaces the older one in that session.
+- `atexit_register({ argv, approval_id?, cwd?, key?, timeout_ms? })` registers one command without invoking a shell. Kimi Code calls include a fresh UUID `approval_id` so the adapter can bind one interactive approval to one registration. A newer pending command with the same `key` replaces the older one in that session.
 - `atexit_cancel({ registration_id })` cancels a provisional or pending command.
 - `atexit_list({ registration_ids })` inspects only the capability IDs supplied by the caller, preventing cross-session enumeration.
 
@@ -59,6 +59,7 @@ Inside Kimi Code, install the release ZIP and reload:
 ```
 
 Kimi installs plugins per user. The adapter stores state under `$KIMI_CODE_HOME/atexit/` because Kimi does not provide a plugin-specific writable data directory.
+Each Kimi registration must use **Approve once** or the first **Approve for this session** prompt. Never Ask, Ask When Needed, headless auto-approval, and later session-cached approvals fail closed because they do not produce a fresh approval proof.
 
 ### OpenCode
 
@@ -98,4 +99,3 @@ See [docs/lifecycle.md](docs/lifecycle.md) for the state machine and exact host 
 ## License
 
 MIT
-
