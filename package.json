@@ -8,11 +8,13 @@
   "scripts": {
     "build": "bun run scripts/build.ts",
     "check": "bun run typecheck && bun run build && bun test",
+    "pack:kimi": "bun run build && bun run scripts/package-kimi.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/bun": "^1.3.10",
+    "fflate": "^0.8.2",
     "typescript": "^5.9.3"
   }
 }

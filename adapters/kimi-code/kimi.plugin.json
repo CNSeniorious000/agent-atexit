@@ -1,0 +1,39 @@
+{
+  "name": "atexit",
+  "version": "0.1.0",
+  "description": "Run registered commands when a Kimi Code session exits.",
+  "author": {
+    "name": "CNSeniorious000",
+    "url": "https://github.com/CNSeniorious000"
+  },
+  "homepage": "https://github.com/CNSeniorious000/agent-atexit",
+  "license": "MIT",
+  "keywords": ["atexit", "cleanup", "lifecycle"],
+  "mcpServers": {
+    "atexit": {
+      "command": "node",
+      "args": ["./dist/mcp.mjs"]
+    }
+  },
+  "hooks": [
+    {
+      "event": "PostToolUse",
+      "matcher": "^mcp__atexit__atexit_register$",
+      "command": "node ./dist/hook.mjs",
+      "timeout": 5
+    },
+    {
+      "event": "SessionEnd",
+      "command": "node ./dist/hook.mjs",
+      "timeout": 5
+    }
+  ],
+  "interface": {
+    "displayName": "atexit",
+    "shortDescription": "Defer commands until the session exits.",
+    "longDescription": "Register literal argv commands, inspect or cancel them by capability ID, and execute pending commands in LIFO order when the current session exits.",
+    "developerName": "CNSeniorious000",
+    "websiteURL": "https://github.com/CNSeniorious000/agent-atexit"
+  }
+}
+
