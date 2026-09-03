@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ActionStore, executeRun, resolveStateRoot, type RunRecord, type SessionBinding } from "@agent-atexit/core";
+import { recordKimiApproval, type KimiPermissionResult } from "./kimi-approval.ts";
 
 interface HookInput {
   client_type?: string;
@@ -55,9 +56,15 @@ async function startRun(root: string, run: RunRecord): Promise<void> {
 async function main(): Promise<void> {
   const input = JSON.parse((await readStdin()) || "{}") as HookInput;
   if (!input.session_id || !input.cwd || !input.hook_event_name) return;
-  const root = resolveStateRoot();
+  const host = detectHost(input);
+  // Codex's legacy bundled-MCP format resolves cwd but does not expose PLUGIN_DATA to the server. Ignore the hook-only compatibility variables so both sides use the XDG state fallback.
+  const root = host === "codex" ? resolveStateRoot({ ...process.env, CLAUDE_PLUGIN_DATA: undefined, PLUGIN_DATA: undefined }) : resolveStateRoot();
+  if (host === "kimi-code" && input.hook_event_name === "PermissionResult") {
+    await recordKimiApproval(root, input as KimiPermissionResult);
+    return;
+  }
   const store = new ActionStore(root);
-  const binding: SessionBinding = { cwd: input.cwd, host: detectHost(input), sessionId: input.session_id };
+  const binding: SessionBinding = { cwd: input.cwd, host, sessionId: input.session_id };
   if (input.hook_event_name === "PostToolUse") {
     for (const id of findRegistrationIds(input.tool_response ?? input.tool_output)) {
       const result = await store.bind(id, binding).catch(() => undefined);

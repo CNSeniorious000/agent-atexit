@@ -10,7 +10,7 @@ const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
 const LOCK_STALE_MS = 10_000;
 
 function validateRegisterInput(input: RegisterInput): void {
-  if (!Array.isArray(input.argv) || input.argv.length === 0 || input.argv.some((part) => typeof part !== "string" || part.length === 0)) throw new Error("argv must contain at least one non-empty string");
+  if (!Array.isArray(input.argv) || input.argv.length === 0 || input.argv[0].length === 0 || input.argv.some((part) => typeof part !== "string")) throw new Error("argv must start with a non-empty executable string");
   if (input.cwd !== undefined && !input.cwd.startsWith("/")) throw new Error("cwd must be an absolute path");
   if (input.key !== undefined && (input.key.length === 0 || input.key.length > 128)) throw new Error("key must contain 1-128 characters");
   if (input.timeoutMs !== undefined && (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 100 || input.timeoutMs > MAX_TIMEOUT_MS)) throw new Error(`timeoutMs must be an integer from 100 to ${MAX_TIMEOUT_MS}`);
@@ -223,4 +223,3 @@ export class ActionStore {
     return join(this.root, "sessions", `${key}.json`);
   }
 }
-
