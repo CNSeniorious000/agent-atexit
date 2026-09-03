@@ -78,4 +78,18 @@ describe("executeRun", () => {
     expect((await executeRun(root, run!.id)).alreadyStarted).toBeTrue();
     expect(await readFile(output, "utf8")).toBe("second\nfirst\n");
   });
+
+  test("does not retry a claimed run after a crash marker", async () => {
+    const { root, store } = await makeStore();
+    const output = join(root, "should-not-exist.txt");
+    const binding = { cwd: root, host: "test", sessionId: "session-a" };
+    const registration = await store.register({ argv: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(output)}, 'duplicate')`] });
+    await store.bind(registration.id, binding);
+    const run = await store.closeAndClaim(binding);
+    expect(run).toBeDefined();
+    await (await store.acquireRun(run!.id))!.close();
+    expect((await executeRun(root, run!.id)).alreadyStarted).toBeTrue();
+    expect(await readFile(output, "utf8").catch(() => undefined)).toBeUndefined();
+    expect((await store.get(registration.id)).state).toBe("claimed");
+  });
 });
