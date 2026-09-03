@@ -7,6 +7,7 @@
     "./server": "./dist/server.js"
   },
   "files": ["dist"],
+  "publishConfig": { "access": "public" },
   "engines": {
     "node": ">=18",
     "opencode": ">=1.18.27"

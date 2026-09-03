@@ -11,6 +11,7 @@
     "check": "bun run typecheck && bun run build && bun run validate && bun test",
     "pack:kimi": "bun run build && bun run scripts/package-kimi.ts",
     "pack:npm": "bun run build && bun run scripts/package-npm.ts",
+    "release:check": "bun run scripts/check-release.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "validate": "bun run scripts/validate.ts"

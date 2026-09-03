@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: bun install --frozen-lockfile
+      - run: bun run release:check
+      - run: bun run check
+      - run: git diff --exit-code -- plugins/atexit/dist
+      - run: bun run artifacts
+      - name: Create checksums
+        run: cd artifacts && sha256sum agent-atexit-kimi.zip agent-atexit-opencode-0.1.0.tgz agent-atexit-dsh-0.1.0.tgz > SHA256SUMS
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            artifacts/agent-atexit-kimi.zip
+            artifacts/agent-atexit-opencode-0.1.0.tgz
+            artifacts/agent-atexit-dsh-0.1.0.tgz
+            artifacts/SHA256SUMS

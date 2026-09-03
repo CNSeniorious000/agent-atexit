@@ -11,12 +11,13 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run check
+      - run: git diff --exit-code -- plugins/atexit/dist
       - run: bun run artifacts
       - uses: actions/upload-artifact@v4
         with:
@@ -25,4 +26,3 @@ jobs:
             artifacts/agent-atexit-kimi.zip
             artifacts/agent-atexit-opencode-0.1.0.tgz
             artifacts/agent-atexit-dsh-0.1.0.tgz
-
