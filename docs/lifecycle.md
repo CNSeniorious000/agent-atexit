@@ -30,7 +30,7 @@ Codex uses the same hook script and a plugin-relative bundled MCP command. The l
 
 ### Kimi Code
 
-Kimi's workspace MCP connection is not session-scoped and tool calls carry no protocol-level session ID. Kimi also ignores MCP approval metadata and does not support MCP elicitation. The adapter therefore requires a fresh UUID `approval_id`: a real `PermissionResult` hook writes a five-second, one-time proof containing the authoritative session ID and exact tool-input hash, and the MCP handler must atomically consume it before creating a bound registration. Auto-approved, cached, stale, replayed, or mismatched calls fail closed. `SessionEnd` reports `exit` or `archive`. The TUI's emergency `SIGHUP` path can bypass cleanup, and non-interactive shutdown is separately bounded.
+Kimi's workspace MCP connection is not session-scoped and tool calls carry no protocol-level session ID. The adapter uses Kimi's `PostToolUse` payload to bind the returned registration ID to the authoritative session ID without adding an approval prompt. `SessionEnd` reports `exit` or `archive`. The TUI's emergency `SIGHUP` path can bypass cleanup, and non-interactive shutdown is separately bounded.
 
 ### OpenCode
 
@@ -38,4 +38,4 @@ The native tool context supplies `sessionID`, so no MCP binding bridge is needed
 
 ### dsh
 
-The native tool context supplies an owning Agent. The adapter installs exactly one async disposer in that Agent's `ctx.effect`; individual actions are kept inside that disposer and drained serially because separate Cordis effects may complete concurrently. A `tools/pre-execute` policy returns `ask` for `atexit_register`, so absent approval infrastructure fails closed.
+The native tool context supplies an owning Agent. The adapter installs exactly one async disposer in that Agent's `ctx.effect`; individual actions are kept inside that disposer and drained serially because separate Cordis effects may complete concurrently. In profiles with the workspace domain, a durable `domain/changed` event also drains a session when its ID enters `archivedSessionIds`; `session/disposed` is an additional idempotent fallback. Registration does not add an approval prompt by default; set the plugin's `ask` config to `true` to make `tools/pre-execute` return `ask` for `atexit_register`.

@@ -6,6 +6,7 @@ import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 const root = resolveStateRoot();
 const store = new ActionStore(root);
 const sessions = new Map<string, SessionBinding>();
+const cleanupInstruction = "Before starting any CLI-managed session or long-lived process that could outlive this agent session—such as a browser session, daemon, or dev server—register its exact cleanup argv with atexit_register. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup. For an ego-browser task space, use argv [\"ego-browser\", \"nodejs\", \"-e\", \"await completeTaskSpace(<id>, { keep: false })\"].";
 
 function startRun(run: RunRecord): void {
   const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
@@ -27,6 +28,7 @@ async function closeSession(value: SessionBinding): Promise<void> {
 const plugin: PluginModule = {
   id: "agent-atexit.opencode",
   server: async () => ({
+    "experimental.chat.system.transform": async (_input, output) => { output.system.push(cleanupInstruction); },
     dispose: async () => {
       await Promise.all([...sessions.values()].map(closeSession));
     },
@@ -38,7 +40,7 @@ const plugin: PluginModule = {
     },
     tool: {
       atexit_register: tool({
-        description: "Register an argv command to run once, in LIFO order, when this OpenCode instance exits or the session is deleted. This call authorizes delayed command execution; shell expansion is never used.",
+        description: `${cleanupInstruction} argv executes directly, without a shell.`,
         args: {
           argv: tool.schema.array(tool.schema.string().min(1)).min(1),
           cwd: tool.schema.string().optional(),
@@ -47,7 +49,7 @@ const plugin: PluginModule = {
         },
         execute: async ({ argv, cwd, key, timeout_ms }, context) => {
           const effectiveCwd = cwd ?? context.directory;
-          await context.ask({ always: [], metadata: { argv, cwd: effectiveCwd }, patterns: [JSON.stringify(argv)], permission: "atexit_register" });
+          if (process.env.AGENT_ATEXIT_ASK === "1") await context.ask({ always: [], metadata: { argv, cwd: effectiveCwd }, patterns: [JSON.stringify(argv)], permission: "atexit_register" });
           const registration = await store.register({ argv: argv as [string, ...string[]], cwd: effectiveCwd, ...(key === undefined ? {} : { key }), ...(timeout_ms === undefined ? {} : { timeoutMs: timeout_ms }) });
           const result = await store.bind(registration.id, binding(context));
           if (result.lateRun) startRun(result.lateRun);

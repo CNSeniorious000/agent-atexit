@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionStore } from "@agent-atexit/core";
-import { consumeKimiApproval } from "../src/kimi-approval.ts";
 
 const roots: string[] = [];
 
@@ -50,14 +48,12 @@ describe("portable lifecycle hook", () => {
     expect((await store.get(registration.id)).state).toBe("pending");
   });
 
-  test("records one-time Kimi approval proofs", async () => {
+  test("binds Kimi registrations from PostToolUse output without an approval prompt", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-hook-"));
     roots.push(root);
-    const approval_id = randomUUID();
-    const tool_input = { approval_id, argv: ["echo", "approved"] };
-    await runHook(root, { client_type: "kimi_code_cli", cwd: root, decision: "approved", hook_event_name: "PermissionResult", session_id: "kimi-session", tool_call_id: "call-1", tool_input, tool_name: "mcp__plugin-atexit_atexit__atexit_register" });
-    const proof = await consumeKimiApproval(root, tool_input);
-    expect(proof).toMatchObject({ approvalId: approval_id, cwd: root, sessionId: "kimi-session", toolCallId: "call-1" });
-    await expect(consumeKimiApproval(root, tool_input)).rejects.toThrow("already consumed");
+    const store = new ActionStore(root);
+    const registration = await store.register({ argv: ["echo", "deferred"] });
+    await runHook(root, { client_type: "kimi_code_cli", cwd: root, hook_event_name: "PostToolUse", session_id: "kimi-session", tool_output: JSON.stringify({ registration_id: registration.id }), tool_name: "mcp__plugin-atexit_atexit__atexit_register" });
+    expect(await store.get(registration.id)).toMatchObject({ host: "kimi-code", state: "pending" });
   });
 });

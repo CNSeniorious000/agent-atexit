@@ -10,10 +10,11 @@
   "repository": "https://github.com/CNSeniorious000/agent-atexit",
   "license": "MIT",
   "keywords": ["atexit", "cleanup", "lifecycle"],
+  "skills": "./skills/",
   "interface": {
     "displayName": "atexit",
     "shortDescription": "Defer commands until the session exits.",
-    "longDescription": "Register literal argv commands, inspect or cancel them by capability ID, and execute pending commands in LIFO order when the current session exits.",
+    "longDescription": "Register exact cleanup commands that run when the current agent session exits.",
     "developerName": "CNSeniorious000",
     "category": "Productivity",
     "capabilities": ["Write"],

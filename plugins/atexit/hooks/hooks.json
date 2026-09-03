@@ -3,7 +3,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "^mcp__.*atexit.*__atexit_register$",
+        "matcher": "mcp__plugin_atexit_atexit__atexit_register|mcp__atexit__atexit_register",
         "hooks": [
           {
             "type": "command",

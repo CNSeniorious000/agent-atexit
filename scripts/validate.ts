@@ -23,4 +23,6 @@ if (!("mcpServers" in codexMcp)) throw new Error("Codex MCP config must contain 
 if (!("mcpServers" in claudeMcp)) throw new Error("Claude MCP config must contain an mcpServers map");
 const hooks = await readJson("plugins/atexit/hooks/hooks.json") as { hooks?: Record<string, unknown> };
 if (!hooks.hooks?.PostToolUse || !hooks.hooks?.SessionEnd) throw new Error("portable hooks must bind registrations and close sessions");
+const kimi = await readJson("adapters/kimi-code/kimi.plugin.json");
+if (typeof kimi.systemPrompt !== "string" || !kimi.systemPrompt.includes('["ego-browser", "nodejs", "-e"')) throw new Error("Kimi system prompt must teach exact ego-browser cleanup registration");
 await Promise.all(["plugins/atexit/dist/mcp.mjs", "plugins/atexit/dist/hook.mjs", "plugins/atexit/dist/worker.mjs", "adapters/opencode/dist/server.js", "adapters/dsh/dist/index.js"].map((path) => access(resolve(root, path))));

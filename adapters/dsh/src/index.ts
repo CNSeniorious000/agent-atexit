@@ -8,34 +8,72 @@ import { ActionStore, resolveStateRoot, type RunRecord, type SessionBinding } fr
 
 export const name = "atexit";
 export const inject = ["tools"];
-export const Config = z.object({});
+export interface Config { ask?: boolean }
+export const Config = z.object({ ask: z.boolean().default(false).description("Ask for host approval before registering each deferred command.") });
 
-export function apply(ctx: Context): void {
+interface WorkspaceDomainChange {
+  domain?: unknown;
+  operation?: unknown;
+  table?: unknown;
+  value?: unknown;
+}
+
+interface WorkspaceDomainEvents {
+  on(name: "domain/changed", listener: (change: WorkspaceDomainChange) => void, options: { global: true }): () => boolean;
+}
+
+function archivedSessionIds(change: WorkspaceDomainChange): string[] {
+  if (change.domain !== "workspace" || change.table !== "" || change.operation !== "put" || typeof change.value !== "object" || change.value === null) return [];
+  const ids = (change.value as { archivedSessionIds?: unknown }).archivedSessionIds;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+}
+
+export function apply(ctx: Context, config: Config = {}): void {
   const root = resolveStateRoot();
   const store = new ActionStore(root);
   const agents = new WeakMap<Agent, SessionBinding>();
+  const sessions = new Map<string, SessionBinding>();
 
   const startRun = (run: RunRecord): void => {
     const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
     const child = spawn("node", [worker, "--state-dir", root, "--run-id", run.id], { detached: true, env: { ...process.env, AGENT_ATEXIT_STATE_DIR: root }, stdio: "ignore" });
     child.unref();
   };
+  const closeSession = async (binding: SessionBinding): Promise<void> => {
+    const run = await store.closeAndClaim(binding);
+    if (run) startRun(run);
+  };
+  const closeFromEvent = (binding: SessionBinding): void => {
+    void closeSession(binding).catch((error) => ctx.logger.warn(`agent-atexit: failed to close session ${binding.sessionId}: ${String(error)}`));
+  };
   const bindingFor = (agent: Agent): SessionBinding => {
     const existing = agents.get(agent);
     if (existing) return existing;
     const binding = { cwd: agent.session.header.cwd ?? process.cwd(), host: "dsh", sessionId: String(agent.session.id) };
     agents.set(agent, binding);
-    agent.ctx.effect(() => async () => {
-      const run = await store.closeAndClaim(binding);
-      if (run) startRun(run);
-    }, "agent-atexit: session cleanup");
+    sessions.set(binding.sessionId, binding);
+    agent.ctx.effect(() => () => closeSession(binding), "agent-atexit: session cleanup");
     return binding;
   };
 
-  ctx.on("tools/pre-execute", (exec, next) => exec.name === "atexit_register" ? Promise.resolve({ kind: "ask", reason: "Authorize this exact argv command to execute later when the current agent session exits." }) : next(), { global: true });
+  ctx.on("session/disposed", (session) => {
+    const id = String(session.id);
+    const binding = sessions.get(id);
+    if (binding) closeFromEvent(binding);
+    sessions.delete(id);
+  }, { global: true });
+  // dsh archive is a durable visibility change, not Agent disposal. Bridge its workspace-domain signal so archived sessions still drain.
+  (ctx as unknown as WorkspaceDomainEvents).on("domain/changed", (change) => {
+    for (const id of archivedSessionIds(change)) {
+      const binding = sessions.get(id);
+      if (binding) closeFromEvent(binding);
+      sessions.delete(id);
+    }
+  }, { global: true });
+  ctx.on("tools/pre-execute", (exec, next) => config.ask && exec.name === "atexit_register" ? Promise.resolve({ kind: "ask", reason: "Authorize this exact argv command to execute later when the current agent session exits." }) : next(), { global: true });
   ctx.tools.register(defineTool({
     name: "atexit_register",
-    description: "Register an argv command to run once, in LIFO order, when this agent session exits. Registration requires one-shot approval; shell expansion is never used.",
+    description: "Before starting any CLI-managed session or long-lived process that could outlive this agent session—such as a browser session, daemon, or dev server—register its exact cleanup argv. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup. argv executes directly, without a shell.",
     parameters: {
       argv: { type: "array", required: true, items: { type: "string" }, description: "Executable followed by literal arguments." },
       cwd: { type: "string", description: "Absolute working directory. Defaults to the session cwd." },
@@ -85,4 +123,3 @@ export function apply(ctx: Context): void {
     },
   }));
 }
-

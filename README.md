@@ -1,13 +1,13 @@
 # agent-atexit
 
-`agent-atexit` gives coding agents a small, explicit cleanup stack. An agent can register literal `argv` commands during a session, inspect or cancel them by capability ID, and have pending commands launched in last-in-first-out order when the host's supported exit lifecycle fires.
+`agent-atexit` gives coding agents a small, explicit cleanup registry. An agent can register literal `argv` commands during a session, inspect or cancel them by capability ID, and have pending commands launched when the host's supported exit lifecycle fires.
 
 > [!WARNING]
-> This project is pre-release. Registering a command authorizes delayed execution with your user account's permissions. Review the exact `argv` shown by the host before approving it.
+> This project is pre-release. Registering a command authorizes delayed execution with your user account's permissions. The adapters do not add an approval prompt by default; host permission policy still applies.
 
 ## Tools
 
-- `atexit_register({ argv, approval_id?, cwd?, key?, timeout_ms? })` registers one command without invoking a shell. Kimi Code calls include a fresh UUID `approval_id` so the adapter can bind one interactive approval to one registration. A newer pending command with the same `key` replaces the older one in that session.
+- `atexit_register({ argv, cwd?, key?, timeout_ms? })` registers one command without invoking a shell. A newer pending command with the same `key` replaces the older one in that session.
 - `atexit_cancel({ registration_id })` cancels a provisional or pending command.
 - `atexit_list({ registration_ids })` inspects only the capability IDs supplied by the caller, preventing cross-session enumeration.
 
@@ -21,7 +21,7 @@ The core persists registrations before returning success, binds them to the host
 | Codex | bundled MCP server | `SessionEnd` | Root-thread close/archive/delete or Codex's idle unload |
 | Kimi Code | bundled MCP server | `SessionEnd` | `exit` and `archive`; `SIGHUP` emergency exit can bypass cleanup |
 | OpenCode | native plugin tools | plugin `dispose` and `session.deleted` | Instance unload and permanent session deletion, not a logical session-close event |
-| dsh | native `ctx.tools` tools | per-agent `ctx.effect` disposer | Agent scope teardown; whole-process teardown has a five-second grace |
+| dsh | native `ctx.tools` tools | workspace archive or per-agent `ctx.effect` disposer | Web archive and Agent teardown; whole-process teardown has a five-second grace |
 
 Every adapter hands claimed work to a detached worker immediately because host shutdown budgets are not long-command runtimes. `SIGKILL`, power loss, host bugs, and forceful process-tree termination can still prevent execution.
 
@@ -58,8 +58,7 @@ Inside Kimi Code, install the release ZIP and reload:
 /reload
 ```
 
-Kimi installs plugins per user. The adapter stores state under `$KIMI_CODE_HOME/atexit/` because Kimi does not provide a plugin-specific writable data directory.
-Each Kimi registration must use **Approve once** or the first **Approve for this session** prompt. Never Ask, Ask When Needed, headless auto-approval, and later session-cached approvals fail closed because they do not produce a fresh approval proof.
+Kimi installs plugins per user. The adapter stores state under `$KIMI_CODE_HOME/atexit/` because Kimi does not provide a plugin-specific writable data directory, and binds registrations to the current session through `PostToolUse`.
 
 ### OpenCode
 
@@ -69,7 +68,7 @@ The npm package is built but will not be published before explicit registry auth
 opencode plugin ./adapters/opencode -g
 ```
 
-After registry publication, the stable form will be `opencode plugin @agent-atexit/opencode@0.1.0 -g`. OpenCode's adapter explicitly calls `context.ask()` for every registration.
+After registry publication, the stable form will be `opencode plugin @agent-atexit/opencode@0.1.0 -g`. Registration is immediate by default; set `AGENT_ATEXIT_ASK=1` to ask through OpenCode's permission system before each registration.
 
 ### dsh
 
@@ -81,6 +80,14 @@ dsh plugin --profile web add ./artifacts/agent-atexit-dsh-0.1.0.tgz
 ```
 
 After registry publication, the stable form will be `dsh plugin --profile web add @agent-atexit/dsh`. Restart the profile after add, update, or remove.
+
+Registration is immediate by default. To require approval for every `atexit_register`, add this override to the profile's `cordis.patch.yml`:
+
+```yaml
+- id: atexit
+  config:
+    ask: true
+```
 
 ## Development
 
