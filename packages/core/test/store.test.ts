@@ -75,6 +75,8 @@ describe("executeRun", () => {
     expect(run).toBeDefined();
     expect((await executeRun(root, run!.id)).alreadyStarted).toBeFalse();
     expect(await readFile(output, "utf8")).toBe("second\nfirst\n");
+    expect((await store.get(second.id)).state).toBe("succeeded");
+    expect(await readFile(store.logPath(second.id), "utf8")).toContain(JSON.stringify(second.argv));
     expect((await executeRun(root, run!.id)).alreadyStarted).toBeTrue();
     expect(await readFile(output, "utf8")).toBe("second\nfirst\n");
   });
