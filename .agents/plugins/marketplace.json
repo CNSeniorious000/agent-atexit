@@ -1,0 +1,20 @@
+{
+  "name": "agent-atexit",
+  "interface": {
+    "displayName": "agent-atexit"
+  },
+  "plugins": [
+    {
+      "name": "atexit",
+      "source": {
+        "source": "local",
+        "path": "./plugins/atexit"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@agent-atexit/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agent-atexit/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "zod": "^4.3.6"
+  }
+}
+

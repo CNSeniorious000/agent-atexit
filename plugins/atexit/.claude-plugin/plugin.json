@@ -1,0 +1,15 @@
+{
+  "name": "atexit",
+  "version": "0.1.0",
+  "description": "Run registered commands when a coding-agent session exits.",
+  "author": {
+    "name": "CNSeniorious000",
+    "url": "https://github.com/CNSeniorious000"
+  },
+  "homepage": "https://github.com/CNSeniorious000/agent-atexit",
+  "repository": "https://github.com/CNSeniorious000/agent-atexit",
+  "license": "MIT",
+  "keywords": ["atexit", "cleanup", "lifecycle"],
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json"
+}

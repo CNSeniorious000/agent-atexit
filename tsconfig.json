@@ -2,7 +2,7 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "exactOptionalPropertyTypes": true,
-    "lib": ["ES2023"],
+    "lib": ["DOM", "ES2023"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "noEmit": true,
@@ -14,4 +14,3 @@
   },
   "include": ["packages/**/*.ts", "adapters/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
 }
-

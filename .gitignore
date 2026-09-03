@@ -1,7 +1,8 @@
 node_modules/
 dist/
+!plugins/atexit/dist/
+!plugins/atexit/dist/**
 artifacts/
 coverage/
 *.tgz
 .DS_Store
-
