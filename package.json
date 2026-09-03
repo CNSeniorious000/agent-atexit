@@ -9,6 +9,7 @@
     "build": "bun run scripts/build.ts",
     "artifacts": "bun run pack:kimi && bun run pack:npm && bun run scripts/verify-artifacts.ts",
     "check": "bun run typecheck && bun run build && bun run validate && bun test",
+    "watch": "bun run scripts/watch.ts",
     "pack:kimi": "bun run build && bun run scripts/package-kimi.ts",
     "pack:npm": "bun run build && bun run scripts/package-npm.ts",
     "release:check": "bun run scripts/check-release.ts",

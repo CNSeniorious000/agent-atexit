@@ -101,6 +101,8 @@ bun run artifacts
 
 `bun run check` type-checks, builds every runtime, validates manifests, and runs the focused suite. `bun run artifacts` creates the Kimi ZIP plus prebuilt OpenCode and dsh tarballs without publishing them.
 
+Run `bun run watch` to rebuild every host adapter on source changes. It does not serve a host; launch the desired coding agent separately. Linked hosts can reload their rebuilt plugin according to their own lifecycle; dsh profiles whose server HMR watches `adapters/dsh/dist` reload automatically. Start new dsh sessions after a reload because in-memory session bindings are not migrated between plugin instances.
+
 See [docs/lifecycle.md](docs/lifecycle.md) for the state machine and exact host limitations, and [SECURITY.md](SECURITY.md) before enabling the plugin.
 
 ## License
