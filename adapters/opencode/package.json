@@ -1,0 +1,23 @@
+{
+  "name": "@agent-atexit/opencode",
+  "version": "0.1.0",
+  "description": "Run registered commands when an OpenCode instance exits.",
+  "type": "module",
+  "exports": {
+    "./server": "./dist/server.js"
+  },
+  "files": ["dist"],
+  "dependencies": {
+    "@agent-atexit/core": "workspace:*"
+  },
+  "engines": {
+    "node": ">=18",
+    "opencode": ">=1.18.27"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CNSeniorious000/agent-atexit.git",
+    "directory": "adapters/opencode"
+  }
+}
