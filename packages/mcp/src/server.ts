@@ -5,12 +5,12 @@ import { z } from "zod";
 
 const stateRoot = resolveStateRoot();
 const store = new ActionStore(stateRoot);
-const server = new McpServer({ name: "agent-atexit", version: "0.1.0" }, { instructions: "Register exact cleanup before starting any CLI-managed session or long-lived process that could outlive this agent session. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup." });
+const server = new McpServer({ name: "agent-atexit", version: "0.1.0" }, { instructions: "For a temporary browser session or background process left running across tool calls, register its exact cleanup argv with atexit_register once the real target is known. Never use placeholders or guessed handles. Register before creation only if cleanup safely tolerates the known target's absence; if creation assigns the target, register in the first response after receiving it. Use parallel tool calls for ready registry updates and independent work in the same response. Avoid a registry-only response when such work is ready, without delaying registration to find a batch partner. After successful normal cleanup or confirmation that creation left no resource, cancel its registration in parallel with independent remaining work, including cleanup of other resources. Cancellation removes the fallback without executing cleanup, so never run it in parallel with its own cleanup. With programmable orchestration, await and check cleanup success, then cancel in the same invocation. If nothing independent remains, call alone; do not invent work or split efficient cleanup to fill a batch." });
 const registrationId = z.string().uuid().describe("Registration ID returned by atexit_register.");
 
 server.registerTool("atexit_register", {
   annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
-  description: "Before starting any CLI-managed session or long-lived process that could outlive this agent session—such as a browser session, daemon, or dev server—register its exact cleanup argv. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup. argv executes directly, without a shell.",
+  description: "Use parallel tool calls to register alongside independent work in the same response. Avoid a registration-only response when other work is ready, without delaying registration to find a batch partner. Register scoped cleanup argv for temporary browser sessions or background processes left running across tool calls. Use a real target, never a placeholder or guessed handle. Register before creation only when the target is known and cleanup safely tolerates its absence; if creation assigns the target, register in the first response after receiving it. Keep the fallback while the resource remains available. argv executes directly, without a shell.",
   inputSchema: {
     argv: z.array(z.string()).min(1).describe("Executable followed by literal arguments. Shell syntax such as pipes and redirects is not interpreted."),
     cwd: z.string().optional().describe("Absolute working directory. Defaults to the session cwd supplied by the lifecycle hook."),
@@ -28,7 +28,7 @@ server.registerTool("atexit_register", {
 
 server.registerTool("atexit_cancel", {
   annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
-  description: "Cancel a pending atexit registration by its unguessable registration ID. Claimed or running commands cannot be cancelled.",
+  description: "After successful manual cleanup or confirmation that creation left no resource, cancel its fallback in parallel with independent remaining work, including cleanup of other resources. This only removes the registration; it does not execute cleanup. Never cancel in parallel with its own cleanup, since failure would leave no fallback. Use a separate call only if no independent work remains. Claimed or running commands cannot be cancelled.",
   inputSchema: { registration_id: registrationId },
   _meta: { "anthropic/alwaysLoad": true },
 }, async ({ registration_id }) => {

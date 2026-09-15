@@ -6,7 +6,7 @@ import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 const root = resolveStateRoot();
 const store = new ActionStore(root);
 const sessions = new Map<string, SessionBinding>();
-const cleanupInstruction = "Before starting any CLI-managed session or long-lived process that could outlive this agent session—such as a browser session, daemon, or dev server—register its exact cleanup argv with atexit_register. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup. For an ego-browser task space, use argv [\"ego-browser\", \"nodejs\", \"-e\", \"await completeTaskSpace(<id>, { keep: false })\"].";
+const cleanupInstruction = "For a temporary browser session or background process left running across tool calls, register its exact cleanup argv with atexit_register once the real target is known. Never use placeholders or guessed handles. Register before creation only if cleanup safely tolerates the known target's absence; if creation assigns the target, register in the first response after receiving it. Use parallel tool calls for ready registry updates and independent work in the same response. Avoid a registry-only response when such work is ready, without delaying registration to find a batch partner. After successful normal cleanup or confirmation that creation left no resource, cancel its registration in parallel with independent remaining work, including cleanup of other resources. Cancellation removes the fallback without executing cleanup, so never run it in parallel with its own cleanup. With programmable orchestration, await and check cleanup success, then cancel in the same invocation. If nothing independent remains, call alone; do not invent work or split efficient cleanup to fill a batch. For an ego-browser task space, use argv [\"ego-browser\", \"nodejs\", \"-e\", \"await completeTaskSpace(<id>, { keep: false })\"].";
 
 function startRun(run: RunRecord): void {
   const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
@@ -57,7 +57,7 @@ const plugin: PluginModule = {
         },
       }),
       atexit_cancel: tool({
-        description: "Cancel a pending atexit registration by its unguessable registration ID.",
+        description: "After successful manual cleanup or confirmation that creation left no resource, cancel its fallback in parallel with independent remaining work, including cleanup of other resources. This only removes the registration; it does not execute cleanup. Never cancel in parallel with its own cleanup, since failure would leave no fallback. Use a separate call only if no independent work remains. Claimed or running commands cannot be cancelled.",
         args: { registration_id: tool.schema.string().uuid() },
         execute: async ({ registration_id }) => JSON.stringify(await store.cancel(registration_id)),
       }),
