@@ -73,7 +73,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.on("tools/pre-execute", (exec, next) => config.ask && exec.name === "atexit_register" ? Promise.resolve({ kind: "ask", reason: "Authorize this exact argv command to execute later when the current agent session exits." }) : next(), { global: true });
   ctx.tools.register(defineTool({
     name: "atexit_register",
-    description: "Use parallel tool calls to register alongside independent work in the same response. Avoid a registration-only response when other work is ready, without delaying registration to find a batch partner. Register scoped cleanup argv for temporary browser sessions or background processes left running across tool calls. Use a real target, never a placeholder or guessed handle. Register before creation only when the target is known and cleanup safely tolerates its absence; if creation assigns the target, register in the first response after receiving it. Keep the fallback while the resource remains available. argv executes directly, without a shell.",
+    description: "Register scoped cleanup argv for a temporary process or CLI session kept live across calls. Cover all newly acquired resources in the first response after their real cleanup targets are known, alongside use, inspection, or other independent task work. Use parallel calls or one orchestration invocation to avoid a separate bookkeeping turn. Register before creation only if cleanup tolerates the known target's absence. argv executes directly, without a shell.",
     parameters: {
       argv: { type: "array", required: true, items: { type: "string" }, description: "Executable followed by literal arguments." },
       cwd: { type: "string", description: "Absolute working directory. Defaults to the session cwd." },
@@ -96,7 +96,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   }));
   ctx.tools.register(defineTool({
     name: "atexit_cancel",
-    description: "After successful manual cleanup or confirmation that creation left no resource, cancel its fallback in parallel with independent remaining work, including cleanup of other resources. This only removes the registration; it does not execute cleanup. Never cancel in parallel with its own cleanup, since failure would leave no fallback. Use a separate call only if no independent work remains. Claimed or running commands cannot be cancelled.",
+    description: "Remove a fallback without executing it. Wait for the successful result of its own cleanup before cancelling; never put cancellation and that cleanup in the same parallel batch. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
     parameters: { registration_id: { type: "string", required: true } },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { cancelled: { type: "boolean", required: true }, registration_id: { type: "string", required: true }, state: { type: "string", required: true } } },

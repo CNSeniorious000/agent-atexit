@@ -5,10 +5,6 @@ description: Prevent resource leaks when a task creates a CLI-managed session or
 
 # Deferred cleanup
 
-Use `atexit_register` as a fallback for temporary processes and CLI-managed sessions, including browser TaskSpaces, that remain live between tool calls. Register runnable cleanup for a known target, never a placeholder or guessed handle. If creation assigns the target, create first, then register in the first response after receiving it. When the target is already known and cleanup tolerates its absence, registration can accompany independent setup work. Keep the fallback while the resource remains available for follow-up.
+Register scoped, runnable fallback cleanup with `atexit_register` for temporary processes and CLI sessions kept live between tool calls. Cover all newly acquired resources in the first response after their real cleanup targets are known. Registration may accompany creation when the target is already known and cleanup tolerates absence. Prefer direct argv; keep the fallback until normal cleanup succeeds.
 
-Use parallel tool calls to include ready registry updates with independent work in the same response, including work on other resources. Avoid a registry-only response when such work is ready, without delaying registration to find a batch partner.
-
-After successful normal cleanup or confirmation that creation left no resource, cancel its registration. Cancellation removes the fallback without executing it. Never cancel in parallel with the cleanup it protects, since failure would leave no fallback. If programmable orchestration is available, await and check cleanup success, then cancel in the same invocation. When no useful independent work remains, a separate round is appropriate; do not invent work or split efficient cleanup just to fill a batch.
-
-Prefer direct argv over a shell wrapper, and never broaden cleanup to unrelated resources.
+Avoid spending a model turn only on registry bookkeeping when independent task work is ready. Use parallel calls or one orchestration invocation: registration can accompany resource use or inspection; cancellation can accompany work on other resources, including their cleanup, after its own cleanup succeeds. Cancellation removes the fallback without running it. Wait for the successful cleanup result before cancelling; never put both in the same parallel batch. Within an orchestration invocation, await cleanup and check success before cancelling. A standalone call is appropriate when nothing independent remains; do not invent work or delay registration to fill a batch.

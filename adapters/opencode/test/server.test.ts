@@ -35,8 +35,7 @@ describe("OpenCode adapter", () => {
     const system = { system: ["host instructions"] };
     await hooks["experimental.chat.system.transform"]!({ model: {} as never }, system);
     expect(system.system).toHaveLength(2);
-    expect(system.system[1]).toContain("register its exact cleanup argv with atexit_register");
-    expect(system.system[1]).toContain('["ego-browser", "nodejs", "-e"');
+    expect(system.system[1]).toContain("fallback cleanup");
     const output = join(root, "executed.txt");
     const approvals: unknown[] = [];
     const context = {
