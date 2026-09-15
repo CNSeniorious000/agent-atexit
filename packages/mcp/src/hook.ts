@@ -10,9 +10,11 @@ interface HookInput {
   tool_name?: string;
   tool_response?: unknown;
   tool_output?: unknown;
+  extra?: { result?: unknown };
 }
 
 function detectHost(input: HookInput): string {
+  if (input.hook_event_name === "post_tool_call" || input.hook_event_name === "on_session_finalize") return "hermes";
   if (input.client_type === "kimi_code_cli") return "kimi-code";
   if (process.env.PLUGIN_ROOT) return "codex";
   return "claude-code";
@@ -60,14 +62,15 @@ async function main(): Promise<void> {
   const root = host === "codex" ? resolveStateRoot({ ...process.env, CLAUDE_PLUGIN_DATA: undefined, PLUGIN_DATA: undefined }) : resolveStateRoot();
   const store = new ActionStore(root);
   const binding: SessionBinding = { cwd: input.cwd, host, sessionId: input.session_id };
-  if (input.hook_event_name === "PostToolUse") {
-    for (const id of findRegistrationIds(input.tool_response ?? input.tool_output)) {
+  if (input.hook_event_name === "PostToolUse" || input.hook_event_name === "post_tool_call") {
+    for (const id of findRegistrationIds(input.tool_response ?? input.tool_output ?? input.extra?.result)) {
       const result = await store.bind(id, binding).catch(() => undefined);
       if (result?.lateRun) await startRun(root, result.lateRun);
     }
     return;
   }
-  if (input.hook_event_name === "SessionEnd") {
+  // Hermes on_session_end is a turn boundary; only on_session_finalize ends resource ownership.
+  if (input.hook_event_name === "SessionEnd" || input.hook_event_name === "on_session_finalize") {
     const run = await store.closeAndClaim(binding);
     if (run) await startRun(root, run);
   }

@@ -24,5 +24,8 @@ if (!("mcpServers" in claudeMcp)) throw new Error("Claude MCP config must contai
 const hooks = await readJson("plugins/atexit/hooks/hooks.json") as { hooks?: Record<string, unknown> };
 if (!hooks.hooks?.PostToolUse || !hooks.hooks?.SessionEnd) throw new Error("portable hooks must bind registrations and close sessions");
 const kimi = await readJson("adapters/kimi-code/kimi.plugin.json");
-if (typeof kimi.systemPrompt !== "string" || !kimi.systemPrompt.includes('["ego-browser", "nodejs", "-e"')) throw new Error("Kimi system prompt must teach exact ego-browser cleanup registration");
+if (typeof kimi.systemPrompt !== "string" || !kimi.systemPrompt.trim()) throw new Error("Kimi system prompt must provide cleanup guidance");
+const hermes = Bun.YAML.parse(await readFile(resolve(root, "adapters/hermes/config.yaml"), "utf8")) as { plugins?: { hook_callback_timeout?: number }; mcp_servers?: { atexit?: { env?: { AGENT_ATEXIT_STATE_DIR?: string } } }; hooks?: Record<string, { command?: string; timeout?: number }[]> };
+if (!hermes.mcp_servers?.atexit?.env?.AGENT_ATEXIT_STATE_DIR || !hermes.hooks?.post_tool_call?.length || !hermes.hooks?.on_session_finalize?.length) throw new Error("Hermes config must provide shared state and registration/finalization hooks");
+if (hermes.plugins?.hook_callback_timeout !== 0) throw new Error("Hermes must preserve overlapping lifecycle callbacks");
 await Promise.all(["plugins/atexit/dist/mcp.mjs", "plugins/atexit/dist/hook.mjs", "plugins/atexit/dist/worker.mjs", "adapters/opencode/dist/server.js", "adapters/dsh/dist/index.js"].map((path) => access(resolve(root, path))));

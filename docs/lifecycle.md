@@ -9,7 +9,7 @@ provisional -> pending -> claimed -> running -> succeeded | failed
 ```
 
 1. `atexit_register` persists a provisional record before returning its capability ID.
-2. Native adapters bind immediately. MCP adapters use the host's `PostToolUse` payload to bind the returned registration ID to the authoritative session ID.
+2. Native adapters bind immediately. MCP adapters use the host's post-tool payload to bind the returned registration ID to the authoritative session ID.
 3. Session close is serialized with binding through a per-session filesystem lock. A binding arriving after close is claimed as a late run instead of being stranded.
 4. Claim writes `claimed` to every selected registration before publishing a run record. This ordering is deliberately at-most-once: a crash may lose work but cannot make a later close claim the same action again.
 5. A detached worker acquires a persistent `run.lock`, executes registrations in reverse creation order, and records command status plus output logs.
@@ -39,3 +39,7 @@ The native tool context supplies `sessionID`, so no MCP binding bridge is needed
 ### dsh
 
 The native tool context supplies an owning Agent. The adapter installs exactly one async disposer in that Agent's `ctx.effect`; individual actions are kept inside that disposer and drained serially because separate Cordis effects may complete concurrently. In profiles with the workspace domain, a durable `domain/changed` event also drains a session when its ID enters `archivedSessionIds`; `session/disposed` is an additional idempotent fallback. Registration does not add an approval prompt by default; set the plugin's `ask` config to `true` to make `tools/pre-execute` return `ask` for `atexit_register`.
+
+### Hermes
+
+Shell hooks bind `post_tool_call` results using Hermes's session ID and drain at `on_session_finalize`. `on_session_end` is a turn boundary and never triggers cleanup. Hermes 0.21.3's `hermes chat --oneshot` uses the supported chat lifecycle; its separate top-level `hermes -z PROMPT` path skips finalization. The [adapter configuration](../adapters/hermes/config.yaml) explicitly shares the state directory because MCP filters inherited environment variables. It disables Hermes's outer callback timeout to prevent concurrent callback suppression; each shell command retains its own timeout. This changes callback execution for all plugins in the configured profile.
