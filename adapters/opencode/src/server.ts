@@ -29,6 +29,10 @@ const plugin: PluginModule = {
   id: "agent-atexit.opencode",
   server: async () => ({
     "experimental.chat.system.transform": async (_input, output) => { output.system.push(cleanupInstruction); },
+    "tool.execute.after": async (input, output) => {
+      // Legacy OpenCode keeps the exit code in metadata but omits it from the model-visible result.
+      if (input.tool === "bash" && Number.isInteger(output.metadata?.exit)) output.output += `\n\n<shell_metadata>\nExit code: ${output.metadata.exit}\n</shell_metadata>`;
+    },
     dispose: async () => {
       await Promise.all([...sessions.values()].map(closeSession));
     },

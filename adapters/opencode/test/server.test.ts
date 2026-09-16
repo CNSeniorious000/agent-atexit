@@ -71,3 +71,31 @@ describe("OpenCode adapter", () => {
     await hooks.dispose!();
   });
 });
+
+describe("OpenCode shell exit visibility", () => {
+  async function hooks() {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-opencode-exit-"));
+    roots.push(root); process.env.AGENT_ATEXIT_STATE_DIR = root;
+    const url = pathToFileURL(resolve(import.meta.dirname, "../dist/server.js")); url.searchParams.set("test", crypto.randomUUID());
+    return await ((await import(url.href)).default as PluginModule).server({} as never);
+  }
+
+  test("exposes silent success and failure without replacing stdout or metadata", async () => {
+    const after = (await hooks())["tool.execute.after"]!;
+    for (const exit of [0, 1, 127]) for (const text of ["(no output)", "line one\nline two\n", ""]) {
+      const metadata = { exit, output: text, truncated: false }, output = { title: "original title", output: text, metadata };
+      await after({ tool: "bash", sessionID: "session", callID: "call", args: {} }, output);
+      expect(output.output).toBe(`${text}\n\n<shell_metadata>\nExit code: ${exit}\n</shell_metadata>`);
+      expect(output.metadata).toBe(metadata); expect(output.metadata).toEqual({ exit, output: text, truncated: false }); expect(output.title).toBe("original title");
+    }
+  });
+
+  test("preserves unrelated tools and unknown, null, or noninteger exit status", async () => {
+    const after = (await hooks())["tool.execute.after"]!;
+    for (const tool of ["bash", "read", "atexit_cancel"]) for (const metadata of [undefined, null, {}, { exit: undefined }, { exit: null }, { exit: "0" }, { exit: 1.5 }, { exit: NaN }, { exit: Infinity }, ...(tool === "bash" ? [] : [{ exit: 0 }, { exit: 1 }])]) {
+      const output = { title: "unchanged", output: "original output", metadata }, original = structuredClone(output);
+      await after({ tool, sessionID: "session", callID: "call", args: {} }, output);
+      expect(output).toEqual(original); expect(output.metadata).toBe(metadata);
+    }
+  });
+});
