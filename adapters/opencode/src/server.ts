@@ -66,7 +66,7 @@ const plugin: PluginModule = {
         },
       }),
       atexit_cancel: tool({
-        description: "Remove a fallback without executing it. Wait for the successful result of its own cleanup before cancelling; never put cancellation and that cleanup in the same parallel batch. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
+        description: "Remove a fallback without executing it. Confirm resource release before cancelling; a stop acknowledgment alone is insufficient. Never parallelize cancellation with its cleanup or the check establishing release. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
         args: { registration_id: tool.schema.string().uuid() },
         execute: async ({ registration_id }) => JSON.stringify(await store.cancel(registration_id)),
       }),

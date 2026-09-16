@@ -28,7 +28,7 @@ server.registerTool("atexit_register", {
 
 server.registerTool("atexit_cancel", {
   annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
-  description: "Remove a fallback without executing it. Wait for the successful result of its own cleanup before cancelling; never put cancellation and that cleanup in the same parallel batch. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
+  description: "Remove a fallback without executing it. Confirm resource release before cancelling; a stop acknowledgment alone is insufficient. Never parallelize cancellation with its cleanup or the check establishing release. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
   inputSchema: { registration_id: registrationId },
   _meta: { "anthropic/alwaysLoad": true },
 }, async ({ registration_id }) => {
