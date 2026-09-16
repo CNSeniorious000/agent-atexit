@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { PluginModule, ToolContext } from "@opencode-ai/plugin";
+import type { Hooks, PluginModule, ToolContext } from "@opencode-ai/plugin";
 
 const roots: string[] = [];
 
@@ -32,6 +32,14 @@ describe("OpenCode adapter", () => {
     url.searchParams.set("test", crypto.randomUUID());
     const plugin = (await import(url.href)).default as PluginModule;
     const hooks = await plugin.server({} as never);
+    const bundled = fileURLToPath(new URL("./skills/", url));
+    for (const config of [{}, { skills: { paths: ["./user-skills"], urls: ["https://example.com/skills/"] } }] as (Parameters<NonNullable<Hooks["config"]>>[0] & { skills?: { paths?: string[]; urls?: string[] } })[]) {
+      const original = structuredClone(config);
+      await hooks.config!(config); await hooks.config!(config);
+      expect(config.skills?.paths).toEqual([...(original.skills?.paths ?? []), bundled]);
+      expect(config.skills?.urls).toEqual(original.skills?.urls);
+    }
+    expect(await readFile(join(bundled, "defer-cleanup/SKILL.md"), "utf8")).toBe(await readFile(resolve(import.meta.dirname, "../../../plugins/atexit/skills/defer-cleanup/SKILL.md"), "utf8"));
     const system = { system: ["host instructions"] };
     await hooks["experimental.chat.system.transform"]!({ model: {} as never }, system);
     expect(system.system).toHaveLength(2);

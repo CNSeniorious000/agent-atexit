@@ -7,7 +7,7 @@ const portableDist = resolve(root, "plugins/atexit/dist");
 const kimiDist = resolve(root, "adapters/kimi-code/dist");
 const opencodeDist = resolve(root, "adapters/opencode/dist");
 const dshDist = resolve(root, "adapters/dsh/dist");
-const sourceRoots = ["packages/core/src", "packages/mcp/src", "adapters/opencode/src", "adapters/dsh/src"].map((path) => resolve(root, path));
+const sourceRoots = ["packages/core/src", "packages/mcp/src", "adapters/opencode/src", "adapters/dsh/src", "plugins/atexit/skills"].map((path) => resolve(root, path));
 
 async function bundle(entry: string, name: string, outdir: string, external: string[] = []): Promise<void> {
   const result = await Bun.build({ entrypoints: [resolve(root, entry)], external, format: "esm", minify: true, naming: name, outdir, packages: "bundle", target: "node" });
@@ -26,6 +26,7 @@ async function rebuild(): Promise<void> {
     bundle("adapters/dsh/src/worker.ts", "worker.js", dshDist),
   ]);
   await cp(portableDist, kimiDist, { force: true, recursive: true });
+  await cp(resolve(root, "plugins/atexit/skills"), resolve(opencodeDist, "skills"), { recursive: true });
   console.log(`rebuilt all adapters at ${new Date().toLocaleTimeString()}`);
 }
 
@@ -47,7 +48,7 @@ function schedule(): void {
 }
 
 await run();
-const watchers = sourceRoots.map((path) => watch(path, { recursive: true }, (_event, filename) => { if (filename?.endsWith(".ts")) schedule(); }));
+const watchers = sourceRoots.map((path) => watch(path, { recursive: true }, (_event, filename) => { if (filename?.endsWith(".ts") || filename?.endsWith(".md")) schedule(); }));
 console.log("watching Claude Code, Codex, Kimi Code, OpenCode, and dsh adapter sources");
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { for (const watcher of watchers) watcher.close(); process.exit(0); });
 await new Promise(() => {});

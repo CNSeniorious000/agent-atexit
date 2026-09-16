@@ -28,6 +28,11 @@ async function closeSession(value: SessionBinding): Promise<void> {
 const plugin: PluginModule = {
   id: "agent-atexit.opencode",
   server: async () => ({
+    config: async (config) => {
+      // OpenCode needs explicit plugin skill paths; its legacy SDK omits this config field.
+      const skills = (config as typeof config & { skills?: { paths?: string[] } }).skills ??= {};
+      skills.paths = [...new Set([...(skills.paths ?? []), fileURLToPath(new URL("./skills/", import.meta.url))])];
+    },
     "experimental.chat.system.transform": async (_input, output) => { output.system.push(cleanupInstruction); },
     "tool.execute.after": async (input, output) => {
       // Legacy OpenCode keeps the exit code in metadata but omits it from the model-visible result.
