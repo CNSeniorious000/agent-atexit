@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ActionStore, executeRun } from "../src/index.ts";
@@ -17,6 +17,20 @@ afterEach(async () => {
 });
 
 describe("ActionStore", () => {
+  test("rejects traversal IDs before lock recovery or run-lock creation touches sibling files", async () => {
+    const { root } = await makeStore(), store = new ActionStore(join(root, "state")), victim = join(root, "victim");
+    await store.init(); await mkdir(victim); await writeFile(join(victim, "keep.txt"), "untouched");
+    const old = new Date(Date.now() - 60_000); await utimes(victim, old, old);
+    const invalid = "../../../../victim", binding = { cwd: root, host: "test", sessionId: "invalid-id" };
+    for (const operation of [() => store.cancel(invalid), () => store.bind(invalid, binding), () => store.acquireRun("../../victim/injected")]) {
+      await expect(operation()).rejects.toThrow("invalid");
+      expect(await readFile(join(victim, "keep.txt"), "utf8")).toBe("untouched");
+      expect(await readdir(victim)).toEqual(["keep.txt"]);
+    }
+    expect(await readdir(join(root, "state/locks"))).toEqual([]);
+    expect(await readdir(join(root, "state/runs"))).toEqual([]);
+  });
+
   test("registers, binds, lists, and cancels a command", async () => {
     const { store } = await makeStore();
     const provisional = await store.register({ argv: ["echo", "hello"], key: "server" });

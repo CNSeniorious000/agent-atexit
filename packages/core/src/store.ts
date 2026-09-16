@@ -136,6 +136,7 @@ export class ActionStore {
   }
 
   async acquireRun(id: string): Promise<Awaited<ReturnType<typeof open>> | undefined> {
+    this.runPath(id);
     try {
       return await open(join(this.root, "runs", `${id}.lock`), "wx", 0o600);
     } catch (error) {
@@ -177,6 +178,8 @@ export class ActionStore {
   }
 
   private async withRecordLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    // IDs also name lock paths; reject traversal before stale-lock recovery can remove a directory.
+    this.recordPath(id);
     return this.withLock(`record-${id}`, operation);
   }
 
