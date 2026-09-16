@@ -1,4 +1,4 @@
-# Launch with `hermes chat -s defer-cleanup`; see README.md for the MCP alwaysLoad compatibility patch.
+# Launch with `hermes chat`; add `-s defer-cleanup` for explicit preload. See README.md for the MCP alwaysLoad compatibility patch.
 plugins:
   # Hermes otherwise drops overlapping invocations of the same callback. Shell hooks retain their own timeout.
   hook_callback_timeout: 0
