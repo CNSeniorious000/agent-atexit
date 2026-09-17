@@ -1,5 +1,5 @@
 import { watch } from "node:fs";
-import { cp, mkdir } from "node:fs/promises";
+import { cp, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
@@ -26,6 +26,8 @@ async function rebuild(): Promise<void> {
     bundle("adapters/dsh/src/worker.ts", "worker.js", dshDist),
   ]);
   await cp(portableDist, kimiDist, { force: true, recursive: true });
+  // Copying alone retains deleted or renamed skills, so discovery would keep exposing stale instructions.
+  await rm(resolve(opencodeDist, "skills"), { force: true, recursive: true });
   await cp(resolve(root, "plugins/atexit/skills"), resolve(opencodeDist, "skills"), { recursive: true });
   console.log(`rebuilt all adapters at ${new Date().toLocaleTimeString()}`);
 }

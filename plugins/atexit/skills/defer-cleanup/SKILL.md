@@ -1,6 +1,6 @@
 ---
 name: defer-cleanup
-description: Arrange fallback cleanup for temporary processes and CLI-managed sessions kept live across tool calls. Use before creating a resource that must remain available between commands.
+description: Arrange fallback cleanup when creating or using temporary processes and CLI-managed sessions that stay live between tool calls.
 ---
 
 # Deferred cleanup

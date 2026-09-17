@@ -136,6 +136,7 @@ export class ActionStore {
   }
 
   async acquireRun(id: string): Promise<Awaited<ReturnType<typeof open>> | undefined> {
+    // Validate the ID before using it in the lock filename, even though the JSON path is not needed here.
     this.runPath(id);
     try {
       return await open(join(this.root, "runs", `${id}.lock`), "wx", 0o600);
