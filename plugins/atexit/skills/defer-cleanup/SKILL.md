@@ -1,6 +1,6 @@
 ---
 name: defer-cleanup
-description: Prevent resource leaks when a task creates a CLI-managed session or long-lived process that could survive the current agent session. Use whenever such a resource will remain running for follow-up work.
+description: Arrange fallback cleanup for temporary processes and CLI-managed sessions kept live across tool calls. Use before creating a resource that must remain available between commands.
 ---
 
 # Deferred cleanup
