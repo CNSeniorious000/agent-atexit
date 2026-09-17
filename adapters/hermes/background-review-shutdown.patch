@@ -1,0 +1,563 @@
+--- a/agent/background_review.py
++++ b/agent/background_review.py
+@@ -12,6 +12,7 @@
+ import logging
+ import os
+ import threading
++import time
+ from contextlib import contextmanager, suppress
+ from dataclasses import dataclass, field
+ from typing import Any, Dict, Iterator, List, Optional, Tuple
+@@ -25,14 +26,22 @@
+ 
+ 
+ class _BackgroundReviewRun:
+-    """Per-review cancellation and request-completion handshake."""
++    """Keep request return separate from actual worker/client resource completion."""
+ 
+     def __init__(self) -> None:
+         self.cancel_requested = threading.Event()
+         self.request_done = threading.Event()
++        self.resources_done = threading.Event()
++        self.owns_resources = False
++        self.cleanup_errors = []
++        self.review_thread = self.cancel_thread = None
+         self._lock = threading.Lock()
+         self._review_agent = None
+-        self._request_finished = self._cancel_dispatched = False
++        self._request_finished = self._cancel_dispatched = self._resources_releasing = False
++        self._request_workers, self._request_clients = [], []
++        self._deadline = None
++        self._cancel_ready = threading.Event()
++        self._cancel_ready.set()
+ 
+     def begin_request(self, review_agent: Any) -> bool:
+         """Atomically admit the first provider-capable review phase."""
+@@ -43,21 +52,75 @@
+             return True
+ 
+     def cancel(self) -> Any:
+-        """Fence startup and return the running fork, if one was admitted."""
++        """Fence startup and return the running fork once, including owner unwind."""
+         with self._lock:
+             self.cancel_requested.set()
+-            if self._review_agent is None or self._cancel_dispatched:
++            if self._review_agent is None or self._cancel_dispatched or self._resources_releasing:
+                 return None
+             self._cancel_dispatched = True
++            self._cancel_ready.clear()
+             return self._review_agent
+ 
+     def mark_request_finished(self) -> bool:
+-        """Latch request completion once; the caller publishes the event."""
+         with self._lock:
+             if self._request_finished:
+                 return False
+-            self._request_finished, self._review_agent = True, None
++            self._request_finished = True
++            if not self.owns_resources:
++                self._review_agent = None
+             return True
++
++    def remaining_timeout(self) -> float:
++        """All shutdown participants and repeated calls share one existing 2s budget."""
++        with self._lock:
++            if self._deadline is None:
++                self._deadline = time.monotonic() + _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS
++            return max(0.0, self._deadline - time.monotonic())
++
++    def record_cleanup_error(self, error: Any) -> None:
++        with self._lock:
++            if str(error) not in self.cleanup_errors:
++                self.cleanup_errors.append(str(error))
++
++    def register_request_worker(self, worker: Any, done_event: Any) -> bool:
++        with self._lock:
++            if self.cancel_requested.is_set() or self._request_finished:
++                return False
++            self._request_workers.append((worker, done_event))
++            return True
++
++    def register_request_client(self, client: Any) -> bool:
++        with self._lock:
++            # Retain even a rejected SDK object: set_client already gave its worker ownership.
++            if all(item is not client for item in self._request_clients):
++                self._request_clients.append(client)
++            return not (self.cancel_requested.is_set() or self._request_finished)
++
++    def wait_request_workers(self) -> bool:
++        with self._lock:
++            workers = list(self._request_workers)
++        for worker, done in workers:
++            if not done.wait(timeout=self.remaining_timeout()):
++                self.record_cleanup_error("request owner cleanup timed out")
++                return False
++            if worker.ident is not None:
++                worker.join(timeout=self.remaining_timeout())
++            if worker.is_alive():
++                self.record_cleanup_error("request owner thread still alive")
++                return False
++        # Stop late cancellation dispatch before closing an SDK object. A hook can itself
++        # be stuck in socket abort; sending that hook is not proof that it has returned.
++        with self._lock:
++            self._resources_releasing = True
++        if not self._cancel_ready.wait(timeout=self.remaining_timeout()):
++            self.record_cleanup_error("cancellation dispatch timed out")
++            return False
++        if self.cancel_thread is not None and self.cancel_thread.ident is not None:
++            self.cancel_thread.join(timeout=self.remaining_timeout())
++            if self.cancel_thread.is_alive():
++                self.record_cleanup_error("cancellation thread still alive")
++                return False
++        return True
+ 
+ 
+ @contextmanager
+@@ -71,7 +134,7 @@
+         yield
+ 
+ 
+-def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
++def prepare_background_review_run(agent: Any, *, task_cfg=None, explicit: bool = False) -> Optional[_BackgroundReviewRun]:
+     """Install a unique run token on the parent before ``Thread.start()``."""
+     run = _BackgroundReviewRun()
+     try:
+@@ -79,9 +142,16 @@
+         if lock is None:
+             lock = agent._background_review_lock = threading.Lock()
+         with lock:
++            if getattr(agent, "_background_review_shutdown", False):
++                return None
+             current = getattr(agent, "_background_review_run", None)
+-            if current is not None and not current.request_done.is_set():
+-                return None
++            if current is not None:
++                pending = (not current.resources_done.is_set() or current.cleanup_errors) if current.owns_resources else not current.request_done.is_set()
++                if pending:
++                    return None
++            # Resolve only an admitted run, inside the existing malformed-agent guard.
++            run.owns_resources = bool(getattr(agent, "_background_review_one_shot", False) and not explicit
++                                      and _resolve_review_runtime(agent, task_cfg).get("api_mode") == "anthropic_messages")
+             agent._background_review_run = run
+     except (AttributeError, TypeError):
+         return None
+@@ -89,32 +159,96 @@
+ 
+ 
+ def finish_background_review_run(agent: Any, run: Optional[_BackgroundReviewRun]) -> None:
+-    """Publish one run's request exit without clearing a successor (ABA-safe)."""
++    """Publish conversation return; keep the token reachable while its owners unwind."""
+     if run is None or not run.mark_request_finished():
+         return
++    if not run.owns_resources:
++        with _optional_lock(agent, "_background_review_lock"):
++            if getattr(agent, "_background_review_run", None) is run:
++                agent._background_review_run = None
++            agent._background_review_last_run = run
++    run.request_done.set()
++
++
++def finish_background_review_resources(agent: Any, run: Optional[_BackgroundReviewRun]) -> None:
++    """Publish completed cleanup attempts, retaining errors for idempotent exit checks."""
++    if run is None or not run.owns_resources:
++        return
+     with _optional_lock(agent, "_background_review_lock"):
+-        if getattr(agent, "_background_review_run", None) is run:
++        if not run.cleanup_errors:
++            with run._lock:
++                run._review_agent = None
++                run._request_clients.clear()
++        run.resources_done.set()
++        if getattr(agent, "_background_review_run", None) is run and not run.cleanup_errors:
+             agent._background_review_run = None
+-    run.request_done.set()
+-
+-
+-def _interrupt_background_review(review_agent: Any) -> None:
+-    """Request abort off-thread so a wedged abort hook cannot stall the live turn (the bounded
+-    ``request_done`` wait in the canceller relies on this returning fast)."""
++        agent._background_review_last_run = run
++
++
++def _interrupt_background_review(review_agent: Any, run: Optional[_BackgroundReviewRun] = None, *, exiting: bool = False) -> Any:
++    """Dispatch interrupt off-thread; retain its handle rather than treating dispatch as release."""
+     def _interrupt() -> None:
+         try:
+             from agent.interrupt_compat import request_hard_interrupt
+ 
+             request_hard_interrupt(
+-                review_agent, "superseded by a new live turn", tool_reason="background review superseded"
++                review_agent, "one-shot CLI exit" if exiting else "superseded by a new live turn",
++                tool_reason="background review exit" if exiting else "background review superseded",
+             )
+-        except Exception:
+-            logger.debug("Failed to cancel in-flight background review for a new turn", exc_info=True)
+-
++        except Exception as exc:
++            if run is not None:
++                run.record_cleanup_error(exc)
++            logger.debug("Failed to cancel in-flight background review", exc_info=True)
++
++    thread = None
+     try:
+-        threading.Thread(target=_interrupt, daemon=True, name="bg-review-cancel").start()
+-    except Exception:
++        thread = threading.Thread(target=_interrupt, daemon=True, name="bg-review-cancel")
++        if run is not None:
++            run.cancel_thread = thread
++        thread.start()
++    except Exception as exc:
++        if run is not None:
++            run.record_cleanup_error(exc)
+         logger.debug("Failed to start background-review cancellation thread", exc_info=True)
++    finally:
++        if run is not None:
++            run._cancel_ready.set()
++    return thread
++
++
++def shutdown_background_review_for_exit(agent: Any) -> bool:
++    """Fence future reviews and bound owner cleanup, SDK release and thread exit by one deadline."""
++    if not getattr(agent, "_background_review_one_shot", False):
++        return False
++    lock = getattr(agent, "_background_review_lock", None)
++    if lock is None:
++        lock = agent._background_review_lock = threading.Lock()
++    with lock:
++        run = getattr(agent, "_background_review_shutdown_run", None)
++        if run is None:
++            run = getattr(agent, "_background_review_run", None) or getattr(agent, "_background_review_last_run", None)
++        if (run is not None and not run.owns_resources) or (run is None and _resolve_review_runtime(agent).get("api_mode") != "anthropic_messages"):
++            return False
++        agent._background_review_shutdown = True
++        agent._background_review_shutdown_run = run
++    if run is None:
++        return getattr(agent, "_background_review_agent", None) is None
++    run.remaining_timeout()
++    review_agent = run.cancel()
++    if review_agent is not None:
++        _interrupt_background_review(review_agent, run, exiting=True)
++    completed = run.resources_done.wait(timeout=run.remaining_timeout())
++    for thread in (run.review_thread, run.cancel_thread):
++        if thread is not None and thread.ident is not None and thread is not threading.current_thread():
++            thread.join(timeout=run.remaining_timeout())
++        if thread is not None and thread.is_alive():
++            completed = False
++    if not completed:
++        run.record_cleanup_error("exit cleanup deadline reached")
++    if not completed or run.cleanup_errors:
++        logger.warning("Background review exit cleanup incomplete: %s", run.cleanup_errors or "deadline reached")
++        return False
++    return True
+ 
+ 
+ def cancel_background_review_for_live_turn(agent: Any) -> None:
+@@ -133,7 +267,7 @@
+     # survive teardown. Placed in this finally so a fork that consumed tokens and THEN raised is still
+     # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
+     if review_agent is not None:
+-        _interrupt_background_review(review_agent)
++        _interrupt_background_review(review_agent, run)
+     if run is None:
+         return
+     if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
+@@ -1074,11 +1208,40 @@
+     review_usage: Dict[str, Any] = field(default_factory=dict)
+ 
+ 
+-def _release_fork_clients(review_agent: Any) -> None:
+-    """The fork shares the foreground session ID: close() / shutdown_memory_provider() are
+-    session-bound (close() kills that session's terminal processes), so release only clients."""
+-    with suppress(Exception):
++def _release_fork_clients(review_agent: Any, review_run: Optional[_BackgroundReviewRun] = None) -> None:
++    """Release only clients: the fork shares session-bound tools with the foreground agent."""
++    if review_run is None or not review_run.owns_resources:
++        with suppress(Exception):
++            review_agent.release_clients()
++        return
++    with review_run._lock:
++        clients = list(review_run._request_clients)
++    clients.append(getattr(review_agent, "_anthropic_client", None))
++    slot = getattr(review_agent, "_request_anthropic_client_cache", None)
++    if isinstance(slot, dict):
++        clients.append(slot.get("client"))
++    if getattr(review_agent, "api_mode", None) != "anthropic_messages":
++        review_run.record_cleanup_error("owned review transport changed outside anthropic_messages")
++    # These are the fork's private Anthropic SDK objects, captured before safe release can
++    # clear a cache slot or swallow a close error. Never hard-close a shared OpenAI/MoA client.
++    seen = set()
++    for client in clients:
++        if client is None or id(client) in seen:
++            continue
++        seen.add(id(client))
++        try:
++            closed = getattr(client, "is_closed", None)
++            if not (closed() if callable(closed) else closed):
++                client.close()
++            closed = getattr(client, "is_closed", None)
++            if not (closed() if callable(closed) else closed):
++                raise RuntimeError("Anthropic SDK close did not confirm is_closed")
++        except Exception as exc:
++            review_run.record_cleanup_error(exc)
++    try:
+         review_agent.release_clients()
++    except Exception as exc:
++        review_run.record_cleanup_error(exc)
+ 
+ 
+ def _run_review_fork(
+@@ -1094,6 +1257,11 @@
+     st.review_agent, _rt, _routed = build_cache_parity_fork(
+         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+     st.review_agent._review_attended = explicit
++    if review_run is not None and review_run.owns_resources:
++        # The fork's resolved runtime wins if auxiliary routing changed since preparation.
++        review_run.owns_resources = getattr(st.review_agent, "api_mode", None) == "anthropic_messages"
++        if review_run.owns_resources:
++            st.review_agent._background_review_owner = review_run
+     _track_review_fork(agent, st.review_agent, register=True)
+     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
+     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
+@@ -1136,13 +1304,15 @@
+         if st.review_agent is not None:
+             st.review_usage.update(_snapshot_review_usage(st.review_agent))
+             _record_review_usage_to_parent(agent, st.review_usage)
+-        # Publish completion as soon as the provider-capable phase has returned or startup
+-        # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).
+-        _track_review_fork(agent, st.review_agent, register=False)
++        # The verified one-shot monitor can return while its request owner still unwinds.
++        # Other callers retain their original request-phase tracking and safe client release.
++        if review_run is None or not review_run.owns_resources:
++            _track_review_fork(agent, st.review_agent, register=False)
+         finish_background_review_run(agent, review_run)
+     st.review_messages = list(getattr(st.review_agent, "_session_messages", []))
+-    _release_fork_clients(st.review_agent)
+-    st.review_agent = None
++    if review_run is None or not review_run.owns_resources:
++        _release_fork_clients(st.review_agent)
++        st.review_agent = None
+ 
+ 
+ def _publish_review_summary(agent: Any, actions: List[str]) -> None:
+@@ -1165,24 +1335,23 @@
+ 
+     See #84423.
+     """
+-    if review_run is not None and review_run.cancel_requested.is_set():
+-        finish_background_review_run(agent, review_run)
+-        return
+-    _set_thread_approval_callback(_bg_review_auto_deny)
+-    # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
+-    # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
+-    # check first so the normal path never resolves the runtime twice.
+-    if not _parent_can_emit_tool_calls(agent) and not _resolve_review_runtime(agent, task_cfg).get("routed"):
+-        logger.warning(
+-            "Background review skipped: provider %r cannot emit Hermes tool calls, "
+-            "so the review fork could not write memories or skills. Set "
+-            "auxiliary.background_review.{provider,model} to route the review to a normal model.",
+-            getattr(agent, "provider", "?"),
+-        )
+-        _set_thread_approval_callback(None)
+-        return
+     st = _ReviewForkState()
+     try:
++        if review_run is not None and review_run.cancel_requested.is_set():
++            return
++        _set_thread_approval_callback(_bg_review_auto_deny)
++        # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
++        # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
++        # check first so the normal path never resolves the runtime twice.
++        if not _parent_can_emit_tool_calls(agent) and not _resolve_review_runtime(agent, task_cfg).get("routed"):
++            logger.warning(
++                "Background review skipped: provider %r cannot emit Hermes tool calls, "
++                "so the review fork could not write memories or skills. Set "
++                "auxiliary.background_review.{provider,model} to route the review to a normal model.",
++                getattr(agent, "provider", "?"),
++            )
++            _set_thread_approval_callback(None)
++            return
+         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every
+         # other thread's console for the whole review.
+         # A process-global ``contextlib.redirect_stdout(devnull)`` here would also blank
+@@ -1225,14 +1394,21 @@
+             _log_review_completion(st.review_usage, "error")
+         agent._emit_auxiliary_failure("background review", e)
+     finally:
+-        # Safety net for the exception path (setup failures before the request-phase finally).
+-        # Both cleanups are identity-scoped and idempotent; re-enter thread-scoped silence so
+-        # cleanup output stays quiet without blanking other threads.
+-        _track_review_fork(agent, st.review_agent, register=False)
+         finish_background_review_run(agent, review_run)
+-        if st.review_agent is not None:
+-            with suppress(Exception), thread_scoped_silence():
+-                _release_fork_clients(st.review_agent)
++        # An owner's done event is emitted after its stream/client cleanup, but also join
++        # the real thread before hard-closing SDK objects. Timeout leaves ownership visible.
++        owned_run = review_run if review_run is not None and review_run.owns_resources else None
++        if owned_run is None or owned_run.wait_request_workers():
++            try:
++                if st.review_agent is not None:
++                    with thread_scoped_silence():
++                        _release_fork_clients(st.review_agent, owned_run)
++            except Exception as exc:
++                if review_run is not None:
++                    review_run.record_cleanup_error(exc)
++            finally:
++                _track_review_fork(agent, st.review_agent, register=False)
++                finish_background_review_resources(agent, review_run)
+         # Clear the approval callback so a recycled thread-id doesn't inherit it.
+         _set_thread_approval_callback(None)
+ 
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -1001,6 +1001,11 @@
+     def set_client(self, client, *, kind: str = "openai"):
+         with self.lock:
+             self.client, self.kind, self.owner_tid = client, kind, threading.get_ident()
++        owner = getattr(self.agent, "_background_review_owner", None)
++        if owner is not None and kind == "anthropic_messages" and not owner.register_request_client(client):
++            # Ownership is already registered, so the worker's finally can close this client
++            # even when cancellation won the race between SDK construction and dispatch.
++            raise InterruptedError("Background review cancelled before request dispatch")
+         return client
+ 
+     @staticmethod
+@@ -3402,7 +3407,17 @@
+                 monitor.join(timeout=2.0)
+         else:
+             self.worker = threading.Thread(target=_context_thread_target(self._run_call), daemon=True)
+-            self.worker.start()
++            owner = getattr(self.agent, "_background_review_owner", None)
++            if owner is not None and not owner.register_request_worker(self.worker, self._call_done):
++                self._call_done.set()
++                raise InterruptedError("Background review cancelled before request worker start")
++            try:
++                self.worker.start()
++            except Exception as exc:
++                self._call_done.set()
++                if owner is not None:
++                    owner.record_cleanup_error(exc)
++                raise
+             self._monitor_loop()
+         if self._monitor_interrupted["yes"]:
+             raise InterruptedError("Agent interrupted during streaming API call")
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -745,6 +745,9 @@
+         instead of hitting the user's GPU mid-session; everything else spawns immediately. ``explicit``
+         (/refine) is never deferred but does not touch the ``focus``-keyed delegate/enabled gates.
+         """
++        # Exit permanently fences queued and immediate review work for this parent.
++        if getattr(self, "_background_review_shutdown", False):
++            return
+         # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
+         if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+             return
+@@ -782,11 +785,11 @@
+         rather than lost.
+         """
+         from agent.background_review import (
+-            finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
++            finish_background_review_run, finish_background_review_resources, prepare_background_review_run, spawn_background_review_thread,
+         )
+         from tools.thread_context import propagate_context_to_thread
+ 
+-        review_run = prepare_background_review_run(self)
++        review_run = prepare_background_review_run(self, task_cfg=task_cfg, explicit=explicit)
+         if review_run is None:
+             return
+         try:
+@@ -804,9 +807,12 @@
+ 
+             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
+             # right profile.
+-            threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review").start()
+-        except Exception:
++            review_run.review_thread = threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review")
++            review_run.review_thread.start()
++        except Exception as exc:
++            review_run.record_cleanup_error(exc)
+             finish_background_review_run(self, review_run)
++            finish_background_review_resources(self, review_run)
+             raise
+ 
+     _REVIEW_REQUEUE_MAX_ATTEMPTS = 3
+@@ -819,7 +825,7 @@
+         """
+         try:
+             # Not cancelled == ran to completion (or was never admitted).
+-            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None:
++            if getattr(self, "_background_review_shutdown", False) or not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None:
+                 return
+             if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
+                 logger.info("Preempted background review dropped after %d requeues", self._REVIEW_REQUEUE_MAX_ATTEMPTS)
+--- a/cli.py
++++ b/cli.py
+@@ -983,6 +983,14 @@
+ def _finalize_single_query(cli) -> None:
+     """Close one-shot CLI resources before releasing the active session lease."""
+     try:
++        from agent.background_review import shutdown_background_review_for_exit
++        agent, _session_id = _oneshot_agent_and_session(cli)
++        if agent is not None:
++            try:
++                cli._background_review_shutdown_complete = shutdown_background_review_for_exit(agent)
++            except Exception:
++                cli._background_review_shutdown_complete = False
++                logger.warning("one-shot background review shutdown failed", exc_info=True)
+         # Order matters: linger for spawned background work BEFORE any teardown (the
+         # parent owns those children's stdout pipes); then the durable flush, since
+         # memory-provider shutdown inside _run_cleanup can issue aux-LLM calls and
+@@ -4102,6 +4110,7 @@
+         bind_quiet_session_key, continue_quiet_notify_completions, quiet_notify_linger_seconds,
+     )
+ 
++    cli.agent._background_review_one_shot = True
+     author = take_turn_author_from_env()
+     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
+     with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
+--- a/agent/chat_completion_nonstream.py
++++ b/agent/chat_completion_nonstream.py
+@@ -41,6 +41,7 @@
+         self.call_start = h.time.time()
+         self.wait_notice_started_ts = None
+         self.thread = None
++        self._call_done = h.threading.Event()
+ 
+     def _install_codex_request_token(self) -> None:
+         if self.codex_token is not None and not self.codex_retired:  # retired before start: don't re-publish
+@@ -98,6 +99,13 @@
+             # really closes so the next attempt builds a fresh pool.
+             self.clients.close_once(
+                 "request_complete" if self.result["response"] is not None else "request_error_cleanup")
++
++    def _run_call(self):
++        # The owner remains live through _call's registry cleanup, including a raising close.
++        try:
++            self._call()
++        finally:
++            self._call_done.set()
+ 
+     def _abort_request(self, reason: str) -> None:
+         """Watchdog/interrupt kill: abort the request client (kind-aware, #67142)
+@@ -246,8 +254,18 @@
+                 self.codex_watchdog_state.retry_started_ts = None
+         agent._touch_activity("waiting for non-streaming API response")
+ 
+-        self.thread = t = h.threading.Thread(target=h._context_thread_target(self._call), daemon=True)
+-        t.start()
++        self.thread = t = h.threading.Thread(target=h._context_thread_target(self._run_call), daemon=True)
++        owner = getattr(agent, "_background_review_owner", None)
++        if owner is not None and not owner.register_request_worker(t, self._call_done):
++            self._call_done.set()
++            raise InterruptedError("Background review cancelled before request worker start")
++        try:
++            t.start()
++        except Exception as exc:
++            self._call_done.set()
++            if owner is not None:
++                owner.record_cleanup_error(exc)
++            raise
+         poll_count = 0
+         while t.is_alive():
+             t.join(timeout=0.3)

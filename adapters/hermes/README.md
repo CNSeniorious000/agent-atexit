@@ -46,3 +46,29 @@ The shipped patch is byte-identical to the frozen candidate (SHA-256 `1a1678e304
 The two contracts failed on control and passed on candidate; the existing focused suite passed 322 tests with one host skip. They cover live/cache metadata equivalence, selective legacy refresh, strict booleans, metadata isolation, explicit deferral, profile scope, and registry generation. Claude Opus 5 reviewed the runtime patch and found no actionable correctness issue.
 
 In the four-task native comparison with Claude Opus 5, control freeform/CLI scored **4/6 and 4/6**, while candidate scored **5/6 and 6/6**. The six checks cover provenance, timely registration, useful batching, safe cancellation, actual resource lifecycle, and session-bound cancellation. Candidate freeform still omitted the final beta cancellation. Initial requests exposed all three atexit tools, adding 2,591 schema characters. The native executor ran these batches sequentially; the evidence concerns same-response batching. These samples do not establish reliable batching or cancellation across tasks.
+
+## One-shot review shutdown (optional)
+
+Quiet one-shot runs can exit while an automatic Anthropic Messages review still owns its HTTP request. [background-review-shutdown.patch](background-review-shutdown.patch) coordinates review cancellation before session finalization. It tracks streaming and nonstreaming request workers, waits for them and the cancellation thread to exit, then releases the review's SDK clients. All shutdown waits share the existing two-second budget.
+
+This separate five-file patch applies to the same pristine Hermes commit `5d59366010640c1d6b8f170d8a4ee109db2bbdef`. It is independent of the MCP visibility patch and is not applied by installation. Its ownership checks target automatic Anthropic Messages reviews in the quiet one-shot path. Interactive sessions, explicit reviews and other provider paths retain their existing cleanup behavior.
+
+```sh
+atexit_checkout=/absolute/path/to/agent-atexit
+hermes_checkout=/absolute/path/to/hermes-agent
+patch_file="$atexit_checkout/adapters/hermes/background-review-shutdown.patch"
+git -C "$hermes_checkout" apply --check "$patch_file"
+git -C "$hermes_checkout" apply "$patch_file"
+git -C "$hermes_checkout" apply --reverse --check "$patch_file"
+```
+
+To revert, check the reverse patch before applying it:
+
+```sh
+git -C "$hermes_checkout" apply --reverse --check "$patch_file"
+git -C "$hermes_checkout" apply --reverse "$patch_file"
+```
+
+The patch SHA-256 is `df7d7ee66294e5f6036b639139c3c8d5078658bd4532ad9213c9121cadfbf116`. Applying and reversing it reproduces the exact candidate and original source bytes with LF checkout settings; repeat application is rejected. Eleven focused checks pass. A real Anthropic SDK against a local HTTP server verifies normal streaming completion, streaming cancellation and nonstreaming cancellation. All three release the original socket and request owner before session finalization; the original baseline leaves both cancellation requests alive at that point and needs test cleanup.
+
+If an owner or client cannot finish cleanup within the bound, shutdown reports failure and keeps its ownership record. Later automatic reviews may remain blocked; eventual cleanup is not guaranteed. Cancelling an unfinished generation does not make that generation complete. These lifecycle checks do not establish improved atexit triggering, batching or model completion.
