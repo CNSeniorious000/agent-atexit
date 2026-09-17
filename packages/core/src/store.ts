@@ -11,7 +11,7 @@ const LOCK_STALE_MS = 10_000;
 
 interface SessionRecord {
   closedAt?: string;
-  openedOrder?: number;
+  openedSequence?: number;
   cwd: string;
   host: string;
   sessionKey: string;
@@ -58,7 +58,7 @@ export class ActionStore {
     const registration: RegistrationRecord = {
       argv: [...input.argv] as [string, ...string[]],
       createdAt: new Date().toISOString(),
-      createdOrder: await this.nextOrder(),
+      createdSequence: await this.nextSequence(),
       id: randomUUID(),
       state: "provisional",
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -77,9 +77,9 @@ export class ActionStore {
       const key = sessionKey(binding.host, binding.sessionId);
       return this.withSessionLock(key, async () => {
         const session = await this.getSession(key);
-        // A resumed host reuses its session ID. Late hooks must not replace or claim the resumed session's resources.
-        const late = Boolean(session?.closedAt) || (session?.openedOrder !== undefined && (current.createdOrder ?? 0) < session.openedOrder);
-        if (current.key && !late) await this.cancelReplaced(current, key);
+        // Old writers have no comparable sequence; keep their cleanup pending without letting it replace a current fallback.
+        const late = Boolean(session?.closedAt) || (session?.openedSequence !== undefined && current.createdSequence !== undefined && current.createdSequence < session.openedSequence);
+        if (current.key && current.createdSequence !== undefined && !late) await this.cancelReplaced(current, key);
         const registration: RegistrationRecord = { ...current, boundAt: new Date().toISOString(), cwd: current.cwd ?? binding.cwd, host: binding.host, sessionKey: key, state: "pending" };
         await this.writeRegistration(registration);
         if (!late) return { registration };
@@ -96,7 +96,7 @@ export class ActionStore {
       const session = await this.getSession(key);
       if (session && !session.closedAt) return;
       // SessionStart is the only reopen signal; register never revives a closed session. Duplicate starts are harmless.
-      await atomicWrite(this.sessionPath(key), { openedOrder: await this.nextOrder(), cwd: binding.cwd, host: binding.host, sessionKey: key });
+      await atomicWrite(this.sessionPath(key), { ...(session?.closedAt ? { openedSequence: await this.nextSequence() } : {}), cwd: binding.cwd, host: binding.host, sessionKey: key });
     });
   }
 
@@ -200,17 +200,20 @@ export class ActionStore {
     }
   }
 
-  private async nextOrder(): Promise<number> {
-    // Registration creation and SessionStart share an order independent of clock resolution or clock changes.
-    // This lock never acquires a session/record lock; SessionStart may safely take session then order.
-    return this.withLock("order", async () => {
-      const path = join(this.root, "order.json");
-      const previous = await readJson<number>(path).catch((error: unknown) => { if (errorCode(error) === "ENOENT") return 0; throw error; });
-      const order = previous + 1;
+  private async nextSequence(): Promise<number> {
+    // Permanent tickets survive allocator crashes. The hint may lag after concurrent writes; existing tickets prevent reuse.
+    // This namespace is separate from the old order.json counter, which a still-running older MCP server may write.
+    const tickets = join(this.root, "orders"), hint = join(this.root, "sequence.json");
+    await mkdir(tickets, { recursive: true, mode: 0o700 });
+    let order = await readJson<number>(hint).catch((error: unknown) => { if (errorCode(error) === "ENOENT") return 0; throw error; });
+    while (true) {
+      order += 1;
       if (!Number.isSafeInteger(order) || order < 1) throw new Error("invalid registration order");
-      await atomicWrite(path, order);
-      return order;
-    });
+      try { await mkdir(join(tickets, String(order)), { mode: 0o700 }); break; }
+      catch (error) { if (errorCode(error) !== "EEXIST") throw error; }
+    }
+    await atomicWrite(hint, order);
+    return order;
   }
 
   private async withRecordLock<T>(id: string, operation: () => Promise<T>): Promise<T> {

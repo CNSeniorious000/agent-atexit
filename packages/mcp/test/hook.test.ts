@@ -73,7 +73,7 @@ describe("portable lifecycle hook", () => {
     expect((await store.get(registration.id)).state).toBe("succeeded");
   });
 
-  test("SessionStart resumes cleanup ownership for both root and subagent tool calls", async () => {
+  test("SessionStart resumes cleanup ownership for tool calls sharing a session ID", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-resume-")); roots.push(root);
     const store = new ActionStore(root), common = { cwd: root, session_id: "same-thread" }, output = join(root, "executed.txt");
     await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
@@ -90,6 +90,23 @@ describe("portable lifecycle hook", () => {
     await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
     expect((await readFile(output, "utf8")).trim().split("\n").sort()).toEqual(["child", "root"]);
     expect((await store.list(registrations.map(({ id }) => id))).every(({ state }) => state === "succeeded")).toBeTrue();
+  });
+
+  test("older writers remain pending after both first SessionStart and resume", async () => {
+    for (const resumed of [false, true]) {
+      const root = await mkdtemp(join(tmpdir(), "agent-atexit-legacy-")); roots.push(root);
+      const store = new ActionStore(root), common = { cwd: root, session_id: "same-thread" }, output = join(root, "executed.txt");
+      if (resumed) await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
+      await runHook(root, { ...common, hook_event_name: "SessionStart", source: resumed ? "resume" : "startup" });
+      const registration = await store.register({ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(" + JSON.stringify(output) + ", 'closed')"] });
+      delete registration.createdSequence; await store.writeRegistration(registration);
+      await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_response: { registration_id: registration.id } });
+      expect((await store.get(registration.id)).state).toBe("pending");
+      expect(await readFile(output, "utf8").catch(() => undefined)).toBeUndefined();
+      await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
+      expect(await readFile(output, "utf8")).toBe("closed");
+      expect((await store.get(registration.id)).state).toBe("succeeded");
+    }
   });
 
   test("a delayed old hook cannot execute or cancel the resumed session's replacement", async () => {
