@@ -62,6 +62,10 @@ async function main(): Promise<void> {
   const root = host === "codex" ? resolveStateRoot({ ...process.env, CLAUDE_PLUGIN_DATA: undefined, PLUGIN_DATA: undefined }) : resolveStateRoot();
   const store = new ActionStore(root);
   const binding: SessionBinding = { cwd: input.cwd, host, sessionId: input.session_id };
+  if (input.hook_event_name === "SessionStart") {
+    await store.openSession(binding);
+    return;
+  }
   if (input.hook_event_name === "PostToolUse" || input.hook_event_name === "post_tool_call") {
     for (const id of findRegistrationIds(input.tool_response ?? input.tool_output ?? input.extra?.result)) {
       const result = await store.bind(id, binding).catch(() => undefined);

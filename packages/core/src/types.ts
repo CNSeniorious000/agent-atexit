@@ -20,6 +20,7 @@ export interface RegistrationRecord {
   claimedAt?: string;
   completedAt?: string;
   createdAt: string;
+  createdOrder?: number;
   cwd?: string;
   error?: string;
   exitCode?: number | null;

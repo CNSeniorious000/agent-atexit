@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,6 +72,56 @@ describe("ActionStore", () => {
     const result = await store.bind(registration.id, binding);
     expect(result.lateRun?.actionIds).toEqual([registration.id]);
     expect(result.registration.state).toBe("claimed");
+  });
+
+  test("keeps delayed pre-resume cleanup separate from the same-key replacement even with identical timestamps", async () => {
+    setSystemTime(new Date("2026-09-17T00:00:00Z"));
+    try {
+      for (const legacy of [false, true]) {
+        const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "resumed" }, output = join(root, "executed.txt");
+        await store.closeAndClaim(binding);
+        const old = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'old\\n')`], key: "server" });
+        if (legacy) { delete old.createdOrder; await store.writeRegistration(old); }
+        await store.openSession(binding);
+        const current = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'current\\n')`], key: "server" });
+        expect(old.createdAt).toBe(current.createdAt);
+        expect((await store.bind(current.id, binding)).registration.state).toBe("pending");
+        const late = await store.bind(old.id, binding);
+        expect(late.lateRun?.actionIds).toEqual([old.id]);
+        expect((await store.get(current.id)).state).toBe("pending");
+        await executeRun(root, late.lateRun!.id);
+        expect(await readFile(output, "utf8")).toBe("old\n");
+        const run = await store.closeAndClaim(binding);
+        expect(run?.actionIds).toEqual([current.id]);
+        await executeRun(root, run!.id);
+        expect(await readFile(output, "utf8")).toBe("old\ncurrent\n");
+      }
+    } finally { setSystemTime(); }
+  });
+
+  test("duplicate SessionStart preserves a live provisional registration", async () => {
+    const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "live" }, output = join(root, "executed.txt");
+    await store.openSession(binding);
+    const registration = await store.register({ argv: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(output)}, 'closed')`] });
+    await store.openSession(binding);
+    const bound = await store.bind(registration.id, binding);
+    expect(bound.registration.state).toBe("pending");
+    expect(bound.lateRun).toBeUndefined();
+    expect(await readFile(output, "utf8").catch(() => undefined)).toBeUndefined();
+    await executeRun(root, (await store.closeAndClaim(binding))!.id);
+    expect(await readFile(output, "utf8")).toBe("closed");
+  });
+
+  test("a resumed session still claims concurrent bind and close exactly once", async () => {
+    const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "racing" }, output = join(root, "executed.txt");
+    await store.closeAndClaim(binding); await store.openSession(binding);
+    const registration = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'once')`] });
+    const [bound, closed] = await Promise.all([store.bind(registration.id, binding), store.closeAndClaim(binding)]);
+    const runs = [bound.lateRun, closed].filter((run) => run !== undefined);
+    expect(runs).toHaveLength(1); expect(runs[0]!.actionIds).toEqual([registration.id]);
+    await executeRun(root, runs[0]!.id);
+    expect(await readFile(output, "utf8")).toBe("once");
+    expect(await store.closeAndClaim(binding)).toBeUndefined();
   });
 });
 

@@ -72,4 +72,38 @@ describe("portable lifecycle hook", () => {
     expect(await readFile(output, "utf8")).toBe("done");
     expect((await store.get(registration.id)).state).toBe("succeeded");
   });
+
+  test("SessionStart resumes cleanup ownership for both root and subagent tool calls", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-resume-")); roots.push(root);
+    const store = new ActionStore(root), common = { cwd: root, session_id: "same-thread" }, output = join(root, "executed.txt");
+    await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
+    await runHook(root, { ...common, hook_event_name: "SessionStart", source: "resume" });
+    const registrations = [];
+    for (const agent of ["root", "child"]) {
+      const registration = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(agent + "\n")})`] });
+      registrations.push(registration);
+      await runHook(root, { ...common, agent_id: agent, hook_event_name: "PostToolUse", tool_response: { registration_id: registration.id } });
+      expect((await store.get(registration.id)).state).toBe("pending");
+    }
+    await runHook(root, { ...common, hook_event_name: "SessionStart", source: "compact" });
+    expect(await readFile(output, "utf8").catch(() => undefined)).toBeUndefined();
+    await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
+    expect((await readFile(output, "utf8")).trim().split("\n").sort()).toEqual(["child", "root"]);
+    expect((await store.list(registrations.map(({ id }) => id))).every(({ state }) => state === "succeeded")).toBeTrue();
+  });
+
+  test("a delayed old hook cannot execute or cancel the resumed session's replacement", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-late-resume-")); roots.push(root);
+    const store = new ActionStore(root), common = { cwd: root, session_id: "same-thread" }, output = join(root, "executed.txt");
+    const old = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'old\\n')`], key: "server" });
+    await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
+    await runHook(root, { ...common, hook_event_name: "SessionStart", source: "resume" });
+    const current = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'current\\n')`], key: "server" });
+    await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_response: { registration_id: current.id } });
+    await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_response: { registration_id: old.id } });
+    expect(await readFile(output, "utf8")).toBe("old\n");
+    expect((await store.get(current.id)).state).toBe("pending");
+    await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
+    expect(await readFile(output, "utf8")).toBe("old\ncurrent\n");
+  });
 });

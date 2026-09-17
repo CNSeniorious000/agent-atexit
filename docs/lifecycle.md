@@ -22,11 +22,13 @@ Raw session IDs are hashed together with the host name before they become storag
 
 ### Claude Code
 
-The plugin uses a scoped MCP server and `PostToolUse`/`SessionEnd` command hooks. `SessionEnd` has a short global budget, and plugin-provided timeout fields do not increase it. `/clear` and interactive session switches have host-defined end reasons, so registrations bind to the exact `session_id` supplied by the hook rather than an MCP process environment that may outlive `/clear`.
+The plugin uses a scoped MCP server and `SessionStart`/`PostToolUse`/`SessionEnd` command hooks. `SessionEnd` has a short global budget, and plugin-provided timeout fields do not increase it. `/clear` and interactive session switches have host-defined end reasons, so registrations bind to the exact `session_id` supplied by the hook rather than an MCP process environment that may outlive `/clear`.
 
 ### Codex
 
-Codex uses the same hook script and a plugin-relative bundled MCP command. The legacy bundled-MCP format does not expose `PLUGIN_DATA` to the server, so both the MCP server and Codex hook deliberately use the XDG state fallback. A task switch does not immediately close a thread; `SessionEnd` fires when the root thread is closed, archived, deleted, or unloaded after the documented idle period. Plugin hooks require hash-based user trust. SessionEnd is synchronous and capped at three seconds.
+Codex uses the same hook script and a plugin-relative bundled MCP command. The legacy bundled-MCP format does not expose `PLUGIN_DATA` to the server, so both the MCP server and Codex hook deliberately use the XDG state fallback. [SessionStart](https://learn.chatgpt.com/docs/hooks#sessionstart) explicitly opens or resumes cleanup ownership; duplicate starts while open preserve that ownership. [SessionEnd](https://learn.chatgpt.com/docs/hooks#sessionend) is root-only and fires on normal app exit, when an open conversation is archived or deleted, or after a closed thread has been idle for 30 minutes. Subagent hooks share the parent `session_id`. Plugin hooks require hash-based user trust. SessionEnd is synchronous and capped at three seconds.
+
+Registrations and reopen boundaries use a persisted store order, not timestamps. A delayed pre-resume registration is claimed alone and cannot replace a new same-key fallback. Hooks do not supply an incarnation token: an old tool that only creates its registration after resume, or an old SessionEnd delivered after the new SessionStart, cannot be distinguished from the new incarnation by session ID alone.
 
 ### Kimi Code
 

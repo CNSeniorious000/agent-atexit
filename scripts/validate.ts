@@ -22,7 +22,7 @@ const claudeMcp = await readJson("plugins/atexit/.mcp.claude.json");
 if (!("mcpServers" in codexMcp)) throw new Error("Codex MCP config must contain an mcpServers map");
 if (!("mcpServers" in claudeMcp)) throw new Error("Claude MCP config must contain an mcpServers map");
 const hooks = await readJson("plugins/atexit/hooks/hooks.json") as { hooks?: Record<string, unknown> };
-if (!hooks.hooks?.PostToolUse || !hooks.hooks?.SessionEnd) throw new Error("portable hooks must bind registrations and close sessions");
+if (!hooks.hooks?.SessionStart || !hooks.hooks?.PostToolUse || !hooks.hooks?.SessionEnd) throw new Error("portable hooks must open sessions, bind registrations, and close sessions");
 const kimi = await readJson("adapters/kimi-code/kimi.plugin.json");
 if (typeof kimi.systemPrompt !== "string" || !/register.*fallback cleanup/is.test(kimi.systemPrompt) || !/cleanup succeeds.*cancel/is.test(kimi.systemPrompt)) throw new Error("Kimi system prompt must cover fallback registration and cancellation after successful cleanup");
 const hermes = Bun.YAML.parse(await readFile(resolve(root, "adapters/hermes/config.yaml"), "utf8")) as { plugins?: { hook_callback_timeout?: number }; mcp_servers?: { atexit?: { command?: string; args?: string[]; env?: { AGENT_ATEXIT_STATE_DIR?: string } } }; hooks?: Record<string, { command?: string; matcher?: string; timeout?: number }[]> };
