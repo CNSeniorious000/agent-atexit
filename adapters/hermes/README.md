@@ -51,9 +51,9 @@ In the four-task native comparison with Claude Opus 5, control freeform/CLI scor
 
 ## MCP tool name repair (optional)
 
-When a model emits `atexit_register` instead of the exposed `mcp__atexit__atexit_register`, Hermes 0.21.3 rejects the call before its existing argument coercion and hooks. [mcp-name-repair.patch](mcp-name-repair.patch) resolves an exact short MCP name only when its owner is unique among tools enabled for the profile and exposed to the session. Normalized canonical names must also be unique. Unknown namespaces and ambiguous names are not guessed; canonical dispatch, trust checks, argument coercion and hooks remain in place. Catalog inspection does not overwrite another session's legacy tool selection. If that lookup fails, inferred MCP names are rejected while unrelated builtin name repair continues.
+When a model emits `atexit_register` or `atexit__atexit_register` instead of the exposed `mcp__atexit__atexit_register`, Hermes 0.21.3 rejects the call before its existing argument coercion and hooks. [mcp-name-repair.patch](mcp-name-repair.patch) resolves exact short names or restores a missing `mcp__` prefix only when the combined candidates have one owner among tools enabled for the profile and exposed to the session. Normalized canonical names must also be unique. Unknown namespaces and ambiguous names are not guessed; canonical dispatch, trust checks, argument coercion and hooks remain in place. Catalog inspection does not overwrite another session's legacy tool selection. If that lookup fails, inferred MCP names are rejected while unrelated builtin name repair continues.
 
-This optional patch changes two runtime files and adds 38 contract cases. Its two input source files were verified against pristine Hermes commit `5d59366010640c1d6b8f170d8a4ee109db2bbdef`, and its files do not overlap the other patches. Use the MCP visibility setup above; the included tests and native replay require `always-load.patch`. Installation does not apply this patch automatically. Check applicability before applying:
+This optional patch changes two runtime files and adds 61 contract cases. Its two input source files were verified against pristine Hermes commit `5d59366010640c1d6b8f170d8a4ee109db2bbdef`, and its files do not overlap the other patches. Use the MCP visibility setup above; the included tests and native replay require `always-load.patch`. Installation does not apply this patch automatically. Check applicability before applying:
 
 ```sh
 atexit_checkout=/absolute/path/to/agent-atexit
@@ -67,9 +67,9 @@ git -C "$hermes_checkout" apply --reverse --check "$patch_file"
 
 To revert, run `git -C "$hermes_checkout" apply --reverse --check "$patch_file"`, then `git -C "$hermes_checkout" apply --reverse "$patch_file"`.
 
-Validation covers all 38 added cases and 13 existing focused regressions, exact application/reversal and repeat-apply rejection. In a deterministic native CLI replay against a local scripted provider, the unpatched runtime rejects both short registration names; the patched runtime uses real MCP calls and shipped hooks to bind and cancel both records in the actual session. Both sessions close and all four service processes and ports are released without evaluator rescue. This replay tests the host, not model decisions.
+Validation covers all 61 contract cases and eight existing name-repair regressions, exact application/reversal and repeat-apply rejection. In a deterministic native CLI replay against a local scripted provider, the previous runtime rejects both names missing the `mcp__` prefix; the patched runtime uses real MCP calls and shipped hooks to bind and cancel both records in the actual session. Both sessions close and all four service processes and ports are released without evaluator rescue. This replay tests the host, not model decisions.
 
-Original model tasks still omitted registration with this repair, including a trial with a different skill summary. That summary is not shipped. The name repair does not establish reliable triggering, timely registration or batching, and those failed observations remain in the evaluation record.
+Original model tasks still omitted registration with the earlier short-name repair, including a trial with a different skill summary. A later instruction-carrier trial exposed the missing-prefix error and premature cancellation. Neither the summary nor the instruction carrier is shipped; the new prefix repair has deterministic dispatch evidence only. The name repair does not establish reliable triggering, timely registration or batching, and those failed observations remain in the evaluation record.
 
 ## One-shot review shutdown (optional)
 

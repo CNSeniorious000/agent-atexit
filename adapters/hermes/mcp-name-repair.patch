@@ -22,7 +22,7 @@
          return normalized
      cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
      for _ in range(2):  # strip trailing tool-suffix up to twice (TodoTool_tool needs it)
-@@ -2353,9 +2356,33 @@
+@@ -2353,9 +2356,35 @@
                  extra.update((stripped, _norm(stripped), _camel_snake(stripped)))
          cands |= extra
      for c in cands:
@@ -46,11 +46,13 @@
 +        matches = [name for name in exposed if name.startswith("mcp__") and _norm(name) == _norm(tool_name) and (registry.get_toolset_for_tool(name) or "").startswith("mcp-")]
 +        return matches[0] if len(matches) == 1 else None
 +    mcp_matches = []
-+    if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tool_name):
-+        for name in exposed:
-+            toolset = registry.get_toolset_for_tool(name)
-+            if toolset and toolset.startswith("mcp-") and mcp_prefixed_tool_name(toolset[4:], tool_name) == name:
-+                mcp_matches.append(name)
++    for name in exposed:
++        toolset = registry.get_toolset_for_tool(name)
++        if not (toolset and toolset.startswith("mcp-")): continue
++        # Union both exact forms before deciding: a qualified name may also be
++        # another server's literal action name, so prefer neither when ambiguous.
++        short_match = re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tool_name) and mcp_prefixed_tool_name(toolset[4:], tool_name) == name
++        if name == "mcp__" + tool_name or short_match: mcp_matches.append(name)
 +    if mcp_matches:
 +        return mcp_matches[0] if len(mcp_matches) == 1 else None
 +    # A fuzzy match must never guess an MCP server or break an ambiguous short name.
@@ -116,7 +118,7 @@
      # "type": "object", string-valued nodes from malformed MCP servers).
 --- /dev/null
 +++ b/tests/agent/test_mcp_name_repair.py
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,213 @@
 +"""Real Hermes module contracts for scoped, unambiguous MCP name repair; no model or RPC."""
 +import importlib.util, json, os, socket
 +from types import SimpleNamespace as NS
@@ -202,10 +204,11 @@
 +    world.register(server="one",action="perform_the_long_registered_operation")
 +    assert world.repair("mcp__two__perform_the_long_registered_operation") is None
 +
-+def test_validation_coercion_and_post_hook_use_canonical_identity(world):
++@pytest.mark.parametrize("emitted",["atexit_register","atexit__atexit_register"])
++def test_validation_coercion_and_post_hook_use_canonical_identity(world,emitted):
 +    from agent.turn_tool_validation import validate_tool_calls
 +    name=world.register(server="atexit",action="atexit_register")
-+    call=NS(id="fixture-call",type="function",function=NS(name="atexit_register",arguments=json.dumps({"argv":json.dumps(["node","fixture.js"])})))
++    call=NS(id="fixture-call",type="function",function=NS(name=emitted,arguments=json.dumps({"argv":json.dumps(["node","fixture.js"])})))
 +    verdict=validate_tool_calls(world.agent,NS(tool_calls=[call]),"tool_calls",messages=[],conversation_history=[],api_call_count=1,effective_task_id="fixture-task")
 +    assert verdict.action=="ok" and not verdict.mixed_invalid_batch and call.function.name==name
 +    result=world.model_tools.handle_function_call(call.function.name,json.loads(call.function.arguments),task_id="fixture-task",session_id="fixture-session",tool_call_id=call.id,skip_pre_tool_call_hook=True,skip_tool_request_middleware=True,skip_tool_execution_middleware=True)
@@ -285,3 +288,47 @@
 +    monkeypatch.setattr(world.model_tools,"get_tool_definitions",fail)
 +    assert world.repair("termnal")=="terminal"
 +    assert world.repair("operation") is None and world.repair("MCP__DEMO__OPERATION") is None
++
++@pytest.mark.parametrize("server,action",[("atexit","atexit_register"),("atexit","atexit_cancel"),("under__score-server","operation"),("Demo","Operation"),("long-server-"*8,"operation")])
++def test_exact_missing_mcp_prefix(world,server,action):
++    name=world.register(server=server,action=action)
++    assert world.repair(name.removeprefix("mcp__"))==name
++
++@pytest.mark.parametrize("unavailable",["not_exposed","disabled","not_enabled","deferred","failed_check","other_profile","unregistered"])
++def test_missing_prefix_obeys_scope(world,unavailable):
++    name=world.register(exposed=unavailable!="not_exposed",enabled=unavailable!="not_enabled",always=unavailable!="deferred",check=(lambda:False) if unavailable=="failed_check" else None,scope=str(world.home/"foreign") if unavailable=="other_profile" else None)
++    if unavailable=="disabled":world.agent.disabled_toolsets=["mcp-demo"]
++    if unavailable=="unregistered":world.registry.deregister(name)
++    assert world.repair(name.removeprefix("mcp__")) is None
++
++@pytest.mark.parametrize("raw",["Demo__operation","demo__Operation","demo__operatio","demo_operation","other__operation"])
++def test_missing_prefix_never_guesses_case_separator_or_server(world,raw):
++    world.register()
++    assert world.repair(raw) is None
++
++@pytest.mark.parametrize("reverse",[False,True])
++def test_missing_prefix_and_literal_action_are_ambiguous(world,reverse):
++    specs=[("demo","operation"),("other","demo__operation")]
++    for server,action in reversed(specs) if reverse else specs:world.register(server=server,action=action)
++    assert world.repair("demo__operation") is None
++    world.agent.disabled_toolsets=["mcp-other"]
++    assert world.repair("demo__operation")=="mcp__demo__operation"
++
++def test_exact_builtin_wins_over_missing_prefix(world):
++    world.register();world.agent.valid_tool_names.add("demo__operation")
++    assert world.repair("demo__operation")=="demo__operation"
++
++def test_missing_prefix_explicit_defer_and_catalog_failure(world,monkeypatch):
++    name=world.register()
++    world.config.write_text(json.dumps({"tools":{"tool_search":{"enabled":"on","defer":[name]}},"model":{"default":"fixture"}}))
++    assert world.repair("demo__operation") is None
++    def fail(**kwargs):raise RuntimeError("fixture scope unavailable")
++    monkeypatch.setattr(world.model_tools,"get_tool_definitions",fail)
++    assert world.repair("demo__operation") is None
++
++def test_prefix_like_builtin_is_not_an_mcp_owner(world,monkeypatch):
++    name="mcp__demo__operation"
++    world.registry.register(name=name,toolset="terminal",schema={"name":name,"parameters":{"type":"object","properties":{}}},handler=lambda args,**kwargs:"unexpected")
++    world.agent.valid_tool_names.add(name);world.agent.enabled_toolsets=["terminal"]
++    monkeypatch.setattr(world.model_tools,"get_tool_definitions",lambda **kwargs:[{"function":{"name":name}}])
++    assert world.repair("demo__operation") is None
