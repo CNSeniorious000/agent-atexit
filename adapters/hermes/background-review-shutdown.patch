@@ -33,7 +33,7 @@
  
      def begin_request(self, review_agent: Any) -> bool:
          """Atomically admit the first provider-capable review phase."""
-@@ -43,21 +52,75 @@
+@@ -43,21 +52,80 @@
              return True
  
      def cancel(self) -> Any:
@@ -78,12 +78,17 @@
 +            self._request_workers.append((worker, done_event))
 +            return True
 +
-+    def register_request_client(self, client: Any) -> bool:
++    def register_request_client(self, client: Any, *, kind: str = "anthropic_messages", private: Optional[bool] = True) -> bool:
 +        with self._lock:
-+            # Retain even a rejected SDK object: set_client already gave its worker ownership.
-+            if all(item is not client for item in self._request_clients):
-+                self._request_clients.append(client)
++            # Keep factory provenance even if cancellation won during SDK construction. Admission
++            # happens later, after the worker's registry can safely release the returned client.
++            if all(item["client"] is not client for item in self._request_clients):
++                self._request_clients.append({"client": client, "kind": kind, "private": private})
 +            return not (self.cancel_requested.is_set() or self._request_finished)
++
++    def request_client_private(self, client: Any, kind: str) -> Optional[bool]:
++        with self._lock:
++            return next((item["private"] for item in self._request_clients if item["client"] is client and item["kind"] == kind), None)
 +
 +    def wait_request_workers(self) -> bool:
 +        with self._lock:
@@ -113,16 +118,21 @@
  
  
  @contextmanager
-@@ -71,7 +134,7 @@
+@@ -71,7 +139,12 @@
          yield
  
  
 -def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
++def _supports_review_ownership(api_mode: Any, provider: Any) -> bool:
++    # MoA borrows a shared facade instead of creating a private request SDK.
++    return api_mode == "anthropic_messages" or (api_mode == "chat_completions" and provider != "moa")
++
++
 +def prepare_background_review_run(agent: Any, *, task_cfg=None, explicit: bool = False) -> Optional[_BackgroundReviewRun]:
      """Install a unique run token on the parent before ``Thread.start()``."""
      run = _BackgroundReviewRun()
      try:
-@@ -79,9 +142,16 @@
+@@ -79,9 +152,17 @@
          if lock is None:
              lock = agent._background_review_lock = threading.Lock()
          with lock:
@@ -136,12 +146,13 @@
 +                if pending:
 +                    return None
 +            # Resolve only an admitted run, inside the existing malformed-agent guard.
-+            run.owns_resources = bool(getattr(agent, "_background_review_one_shot", False) and not explicit
-+                                      and _resolve_review_runtime(agent, task_cfg).get("api_mode") == "anthropic_messages")
++            if getattr(agent, "_background_review_one_shot", False) and not explicit:
++                runtime = _resolve_review_runtime(agent, task_cfg)
++                run.owns_resources = _supports_review_ownership(runtime.get("api_mode"), runtime.get("provider"))
              agent._background_review_run = run
      except (AttributeError, TypeError):
          return None
-@@ -89,32 +159,96 @@
+@@ -89,32 +170,100 @@
  
  
  def finish_background_review_run(agent: Any, run: Optional[_BackgroundReviewRun]) -> None:
@@ -227,8 +238,12 @@
 +        run = getattr(agent, "_background_review_shutdown_run", None)
 +        if run is None:
 +            run = getattr(agent, "_background_review_run", None) or getattr(agent, "_background_review_last_run", None)
-+        if (run is not None and not run.owns_resources) or (run is None and _resolve_review_runtime(agent).get("api_mode") != "anthropic_messages"):
++        if run is not None and not run.owns_resources:
 +            return False
++        if run is None:
++            runtime = _resolve_review_runtime(agent)
++            if not _supports_review_ownership(runtime.get("api_mode"), runtime.get("provider")):
++                return False
 +        agent._background_review_shutdown = True
 +        agent._background_review_shutdown_run = run
 +    if run is None:
@@ -252,7 +267,7 @@
  
  
  def cancel_background_review_for_live_turn(agent: Any) -> None:
-@@ -133,7 +267,7 @@
+@@ -133,7 +282,7 @@
      # survive teardown. Placed in this finally so a fork that consumed tokens and THEN raised is still
      # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
      if review_agent is not None:
@@ -261,7 +276,7 @@
      if run is None:
          return
      if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
-@@ -1074,11 +1208,40 @@
+@@ -1074,11 +1223,52 @@
      review_usage: Dict[str, Any] = field(default_factory=dict)
  
  
@@ -276,15 +291,27 @@
 +            review_agent.release_clients()
 +        return
 +    with review_run._lock:
-+        clients = list(review_run._request_clients)
++        clients = [item["client"] for item in review_run._request_clients if item["private"]]
 +    clients.append(getattr(review_agent, "_anthropic_client", None))
-+    slot = getattr(review_agent, "_request_anthropic_client_cache", None)
-+    if isinstance(slot, dict):
-+        clients.append(slot.get("client"))
-+    if getattr(review_agent, "api_mode", None) != "anthropic_messages":
-+        review_run.record_cleanup_error("owned review transport changed outside anthropic_messages")
-+    # These are the fork's private Anthropic SDK objects, captured before safe release can
-+    # clear a cache slot or swallow a close error. Never hard-close a shared OpenAI/MoA client.
++    # Worker completion can leave a healthy request SDK idle in its cache. Inspect before
++    # release_clients clears slots or suppresses close failures; an in-use slot is not ours to close.
++    with _optional_lock(review_agent, "_client_lock"):
++        for attr, kind in (("_request_anthropic_client_cache", "anthropic_messages"), ("_request_client_cache", "openai")):
++            slot = getattr(review_agent, attr, None)
++            if not isinstance(slot, dict) or slot.get("client") is None:
++                continue
++            if slot.get("in_use"):
++                review_run.record_cleanup_error("request client cache still in use after worker exit")
++                return
++            client = slot["client"]
++            if kind == "openai" and review_run.request_client_private(client, kind) is not True:
++                review_run.record_cleanup_error("request client cache has no private ownership provenance")
++                return
++            clients.append(client)
++    if not _supports_review_ownership(getattr(review_agent, "api_mode", None), getattr(review_agent, "provider", None)):
++        review_run.record_cleanup_error("owned review transport changed outside supported request clients")
++    # Only private SDKs are hard-closed after worker/cancel joins. Shared primary retirement
++    # below remains the existing release_clients policy, not evidence that a shared SDK closed.
 +    seen = set()
 +    for client in clients:
 +        if client is None or id(client) in seen:
@@ -296,7 +323,7 @@
 +                client.close()
 +            closed = getattr(client, "is_closed", None)
 +            if not (closed() if callable(closed) else closed):
-+                raise RuntimeError("Anthropic SDK close did not confirm is_closed")
++                raise RuntimeError("Review SDK close did not confirm is_closed")
 +        except Exception as exc:
 +            review_run.record_cleanup_error(exc)
 +    try:
@@ -306,19 +333,19 @@
  
  
  def _run_review_fork(
-@@ -1094,6 +1257,11 @@
+@@ -1094,6 +1284,11 @@
      st.review_agent, _rt, _routed = build_cache_parity_fork(
          agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
      st.review_agent._review_attended = explicit
 +    if review_run is not None and review_run.owns_resources:
 +        # The fork's resolved runtime wins if auxiliary routing changed since preparation.
-+        review_run.owns_resources = getattr(st.review_agent, "api_mode", None) == "anthropic_messages"
++        review_run.owns_resources = _supports_review_ownership(getattr(st.review_agent, "api_mode", None), getattr(st.review_agent, "provider", None))
 +        if review_run.owns_resources:
 +            st.review_agent._background_review_owner = review_run
      _track_review_fork(agent, st.review_agent, register=True)
      from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
      review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
-@@ -1136,13 +1304,15 @@
+@@ -1136,13 +1331,15 @@
          if st.review_agent is not None:
              st.review_usage.update(_snapshot_review_usage(st.review_agent))
              _record_review_usage_to_parent(agent, st.review_usage)
@@ -339,7 +366,7 @@
  
  
  def _publish_review_summary(agent: Any, actions: List[str]) -> None:
-@@ -1165,24 +1335,23 @@
+@@ -1165,24 +1362,23 @@
  
      See #84423.
      """
@@ -379,7 +406,7 @@
          # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every
          # other thread's console for the whole review.
          # A process-global ``contextlib.redirect_stdout(devnull)`` here would also blank
-@@ -1225,14 +1394,21 @@
+@@ -1225,14 +1421,21 @@
              _log_review_completion(st.review_usage, "error")
          agent._emit_auxiliary_failure("background review", e)
      finally:
@@ -410,19 +437,38 @@
  
 --- a/agent/chat_completion_helpers.py
 +++ b/agent/chat_completion_helpers.py
-@@ -1001,6 +1001,11 @@
+@@ -1001,6 +1001,18 @@
      def set_client(self, client, *, kind: str = "openai"):
          with self.lock:
              self.client, self.kind, self.owner_tid = client, kind, threading.get_ident()
 +        owner = getattr(self.agent, "_background_review_owner", None)
-+        if owner is not None and kind == "anthropic_messages" and not owner.register_request_client(client):
-+            # Ownership is already registered, so the worker's finally can close this client
-+            # even when cancellation won the race between SDK construction and dispatch.
-+            raise InterruptedError("Background review cancelled before request dispatch")
++        if owner is not None and kind in {"anthropic_messages", "openai"}:
++            private = True if kind == "anthropic_messages" else owner.request_client_private(client, kind)
++            if private is None:
++                # Retain unknown SDKs with the failed run; dropping the registry must not
++                # silently turn garbage collection into an unverified resource release.
++                owner.register_request_client(client, kind=kind, private=None)
++                owner.record_cleanup_error("request client has no ownership provenance")
++                raise RuntimeError("Background review request client ownership is unknown")
++            if not owner.register_request_client(client, kind=kind, private=private):
++                # The registry owns cleanup before cancellation can reject provider dispatch.
++                raise InterruptedError("Background review cancelled before request dispatch")
          return client
  
      @staticmethod
-@@ -3402,7 +3407,17 @@
+@@ -1027,6 +1039,11 @@
+     def close_once(self, reason: str) -> None:
+         with self.lock:
+             request_client, request_kind, owner_tid = self.client, self.kind, self.owner_tid
++            owner = getattr(self.agent, "_background_review_owner", None)
++            if owner is not None and request_kind == "openai" and owner.request_client_private(request_client, request_kind) is not True:
++                # A factory may lend the primary (MoA/test facade). Never abort its shared sockets.
++                self.client = self.owner_tid = None
++                return
+             stranger_thread = (
+                 request_kind != "stream"
+                 and request_client is not None
+@@ -3402,7 +3419,17 @@
                  monitor.join(timeout=2.0)
          else:
              self.worker = threading.Thread(target=_context_thread_target(self._run_call), daemon=True)
@@ -441,6 +487,51 @@
              self._monitor_loop()
          if self._monitor_interrupted["yes"]:
              raise InterruptedError("Agent interrupted during streaming API call")
+--- a/agent/chat_completion_nonstream.py
++++ b/agent/chat_completion_nonstream.py
+@@ -41,6 +41,7 @@
+         self.call_start = h.time.time()
+         self.wait_notice_started_ts = None
+         self.thread = None
++        self._call_done = h.threading.Event()
+ 
+     def _install_codex_request_token(self) -> None:
+         if self.codex_token is not None and not self.codex_retired:  # retired before start: don't re-publish
+@@ -98,6 +99,13 @@
+             # really closes so the next attempt builds a fresh pool.
+             self.clients.close_once(
+                 "request_complete" if self.result["response"] is not None else "request_error_cleanup")
++
++    def _run_call(self):
++        # The owner remains live through _call's registry cleanup, including a raising close.
++        try:
++            self._call()
++        finally:
++            self._call_done.set()
+ 
+     def _abort_request(self, reason: str) -> None:
+         """Watchdog/interrupt kill: abort the request client (kind-aware, #67142)
+@@ -246,8 +254,18 @@
+                 self.codex_watchdog_state.retry_started_ts = None
+         agent._touch_activity("waiting for non-streaming API response")
+ 
+-        self.thread = t = h.threading.Thread(target=h._context_thread_target(self._call), daemon=True)
+-        t.start()
++        self.thread = t = h.threading.Thread(target=h._context_thread_target(self._run_call), daemon=True)
++        owner = getattr(agent, "_background_review_owner", None)
++        if owner is not None and not owner.register_request_worker(t, self._call_done):
++            self._call_done.set()
++            raise InterruptedError("Background review cancelled before request worker start")
++        try:
++            t.start()
++        except Exception as exc:
++            self._call_done.set()
++            if owner is not None:
++                owner.record_cleanup_error(exc)
++            raise
+         poll_count = 0
+         while t.is_alive():
+             t.join(timeout=0.3)
 --- a/run_agent.py
 +++ b/run_agent.py
 @@ -745,6 +745,9 @@
@@ -516,48 +607,318 @@
      author = take_turn_author_from_env()
      author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
      with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
---- a/agent/chat_completion_nonstream.py
-+++ b/agent/chat_completion_nonstream.py
-@@ -41,6 +41,7 @@
-         self.call_start = h.time.time()
-         self.wait_notice_started_ts = None
-         self.thread = None
-+        self._call_done = h.threading.Event()
- 
-     def _install_codex_request_token(self) -> None:
-         if self.codex_token is not None and not self.codex_retired:  # retired before start: don't re-publish
-@@ -98,6 +99,13 @@
-             # really closes so the next attempt builds a fresh pool.
-             self.clients.close_once(
-                 "request_complete" if self.result["response"] is not None else "request_error_cleanup")
-+
-+    def _run_call(self):
-+        # The owner remains live through _call's registry cleanup, including a raising close.
-+        try:
-+            self._call()
-+        finally:
-+            self._call_done.set()
- 
-     def _abort_request(self, reason: str) -> None:
-         """Watchdog/interrupt kill: abort the request client (kind-aware, #67142)
-@@ -246,8 +254,18 @@
-                 self.codex_watchdog_state.retry_started_ts = None
-         agent._touch_activity("waiting for non-streaming API response")
- 
--        self.thread = t = h.threading.Thread(target=h._context_thread_target(self._call), daemon=True)
--        t.start()
-+        self.thread = t = h.threading.Thread(target=h._context_thread_target(self._run_call), daemon=True)
-+        owner = getattr(agent, "_background_review_owner", None)
-+        if owner is not None and not owner.register_request_worker(t, self._call_done):
-+            self._call_done.set()
-+            raise InterruptedError("Background review cancelled before request worker start")
-+        try:
-+            t.start()
-+        except Exception as exc:
-+            self._call_done.set()
+--- a/agent/client_lifecycle.py
++++ b/agent/client_lifecycle.py
+@@ -426,7 +426,10 @@
+     def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
+         from unittest.mock import Mock
+         primary_client = self._ensure_primary_openai_client(reason=reason)
++        owner = getattr(self, "_background_review_owner", None)
+         if self.provider == "moa" or isinstance(primary_client, Mock):
 +            if owner is not None:
-+                owner.record_cleanup_error(exc)
-+            raise
-         poll_count = 0
-         while t.is_alive():
-             t.join(timeout=0.3)
++                owner.register_request_client(primary_client, kind="openai", private=False)
+             return primary_client
+         with self._openai_client_lock():
+             request_kwargs = dict(self._client_kwargs)
+@@ -439,6 +442,8 @@
+             request_kwargs["default_headers"] = copilot_request_headers(is_agent_turn=True, is_vision=True)
+         cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_kwargs)
+         if cached is not None:
++            if owner is not None:
++                owner.register_request_client(cached, kind="openai", private=True)
+             return cached
+         if stale is not None:
+             self._close_openai_client(stale, reason=f"reuse_evict:{reason}", shared=False)
+@@ -446,6 +451,8 @@
+         # Snapshot nested dicts (default_headers) so an aliased inner object can't mutate the cache key.
+         snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in request_kwargs.items()}
+         self._store_request_slot(_OPENAI_SLOT, client, snapshot)
++        if owner is not None:
++            owner.register_request_client(client, kind="openai", private=True)
+         return client
+ 
+     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
+--- /dev/null
++++ b/tests/agent/test_review_client_ownership.py
+@@ -0,0 +1,281 @@
++"""One-shot review request ownership: borrowed clients never become privately closeable.
++
++The real lifecycle/registry/barrier run; only SDK construction and socket shutdown are fakes.
++Real SDK/socket evidence is intentionally separate from these deterministic concurrency contracts.
++"""
++import gc
++import weakref
++import threading
++import time
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++import pytest
++
++from agent import background_review as bg
++from agent.chat_completion_helpers import _RequestClientRegistry
++from run_agent import AIAgent
++
++
++class _SDK:
++    def __init__(self, *, forbidden=False):
++        self.closed, self.forbidden, self.fail_close = False, forbidden, False
++        self.close_threads = []
++
++    def is_closed(self):
++        return self.closed
++
++    def close(self):
++        self.close_threads.append(threading.get_ident())
++        if self.forbidden:
++            raise AssertionError("borrowed primary must not be hard-closed")
++        if self.fail_close:
++            raise RuntimeError("private SDK close failed")
++        self.closed = True
++
++
++def _agent(owner):
++    agent = AIAgent.__new__(AIAgent)
++    agent.provider, agent.api_mode, agent.model, agent.base_url = "custom", "chat_completions", "local-fixture", "http://127.0.0.1:1/v1"
++    agent.client, agent._client_kwargs, agent._client_lock = _SDK(forbidden=True), {"base_url": agent.base_url, "api_key": "fixture"}, threading.RLock()
++    agent._active_children, agent._active_children_lock = [], threading.Lock()
++    agent._anthropic_client = None
++    if owner is not None:
++        agent._background_review_owner = owner
++    agent.created, agent.aborted = [], []
++    agent._ensure_primary_openai_client = lambda **_: agent.client
++
++    def create(_kwargs, **_):
++        client = _SDK()
++        agent.created.append(client)
++        return client
++
++    def abort(client):
++        agent.aborted.append((client, threading.get_ident()))
++        return 1
++
++    agent._create_openai_client, agent._force_close_tcp_sockets = create, abort
++    return agent
++
++
++def _run():
++    run = bg._BackgroundReviewRun()
++    run.owns_resources = True
++    return run
++
++
++@pytest.mark.parametrize("case", ["private_idle", "private_cached", "private_overflow", "borrowed_moa", "borrowed_mock", "unknown_source", "cancelled_private", "cancelled_borrowed", "in_use_cache", "unknown_idle_cache", "close_failure", "foreign_abort", "ordinary_request"])
++def test_request_release_respects_factory_ownership(case):
++    run = None if case == "ordinary_request" else _run()
++    agent = _agent(run)
++    primary = agent.client
++    registry = _RequestClientRegistry(agent)
++    clients, threads, gates, done_events, thread_errors = [], [], [], [], []
++    try:
++        if case == "borrowed_moa" or case == "cancelled_borrowed":
++            agent.provider = "moa"
++        elif case == "borrowed_mock":
++            agent.client = primary = Mock()
++            primary.close.side_effect = AssertionError("borrowed Mock primary must not be closed")
++        if case == "unknown_source":
++            client = _SDK(forbidden=True)
++            with pytest.raises(RuntimeError):
++                registry.set_client(client)
++            registry.close_once("request_error_cleanup")
++            assert not client.close_threads and run.cleanup_errors
++            retained = weakref.ref(client)
++            del client
++            gc.collect()
++            assert retained() is not None, "failed owner lost its unknown SDK after registry cleanup"
++            assert run.request_client_private(retained(), "openai") is None
++            return
++        if case == "unknown_idle_cache":
++            client = _SDK(forbidden=True)
++            agent._request_client_cache = {"client": client, "key": {}, "in_use": False, "poisoned": False}
++            bg._release_fork_clients(agent, run)
++            assert not client.close_threads and run.cleanup_errors
++            assert agent.client is primary
++            return
++        if case == "foreign_abort":
++            entered, release, done = threading.Event(), threading.Event(), threading.Event()
++            gates.append(release); done_events.append(done)
++
++            def work():
++                try:
++                    client = registry.set_client(agent._create_request_openai_client(reason="fixture"))
++                    clients.append(client)
++                    entered.set()
++                    assert release.wait(5), "test did not release its request worker"
++                except BaseException as error:
++                    thread_errors.append(error)
++                finally:
++                    registry.close_once("request_error_cleanup")
++                    done.set()
++
++            worker = threading.Thread(target=work, name="review-owned-request-fixture")
++            threads.append(worker)
++            assert run.register_request_worker(worker, done)
++            worker.start()
++            assert entered.wait(3), "request worker failed before dispatch seam"
++            registry.close_once("interrupt_abort")
++            assert not clients[0].close_threads
++            assert agent.aborted == [(clients[0], threading.get_ident())]
++            release.set()
++            assert run.wait_request_workers()
++            assert clients[0].close_threads == [worker.ident]
++            assert not worker.is_alive() and not thread_errors
++            bg._release_fork_clients(agent, run)
++            assert not run.cleanup_errors and not primary.close_threads
++            return
++        if case.startswith("cancelled_"):
++            run.cancel()
++        client = agent._create_request_openai_client(reason="fixture")
++        clients.append(client)
++        if case.startswith("cancelled_"):
++            dispatched = []
++            with pytest.raises(InterruptedError):
++                registry.set_client(client)
++                dispatched.append(client)
++            registry.close_once("request_error_cleanup")
++            assert not dispatched
++            if case == "cancelled_private":
++                assert client.is_closed()
++            else:
++                assert not primary.close_threads and not agent.aborted
++            return
++        registry.set_client(client)
++        if case in {"borrowed_moa", "borrowed_mock"}:
++            registry.set_client(primary)
++            registry.close_once("request_error_cleanup")
++            assert client is primary
++            assert not primary.close.called if isinstance(primary, Mock) else not primary.close_threads
++            assert not agent.aborted
++            assert run.request_client_private(primary, "openai") is False
++            bg._release_fork_clients(agent, run)
++            assert not primary.close.called if isinstance(primary, Mock) else not primary.close_threads
++            assert bool(run.cleanup_errors) is (case == "borrowed_moa"), "forced MoA ownership must remain a reported unsupported scope"
++            return
++        if case == "in_use_cache":
++            bg._release_fork_clients(agent, run)
++            assert not client.close_threads and not primary.close_threads
++            assert run.cleanup_errors and agent.client is primary
++            return
++        registry.close_once("stream_request_complete")
++        assert not client.is_closed(), "clean request should remain reusable before the fork ends"
++        if case == "private_cached":
++            registry.set_client(agent._create_request_openai_client(reason="fixture"))
++            assert registry.client is client and len(agent.created) == 1
++            registry.close_once("stream_request_complete")
++        elif case == "private_overflow":
++            registry.set_client(agent._create_request_openai_client(reason="fixture"))
++            extra = agent._create_request_openai_client(reason="concurrent-fixture")
++            clients.append(extra)
++            assert extra is not client
++            extra_registry = _RequestClientRegistry(agent)
++            extra_registry.set_client(extra)
++            extra_registry.close_once("request_complete")
++            assert extra.is_closed()
++            registry.close_once("stream_request_complete")
++        elif case == "close_failure":
++            client.fail_close = True
++        if run is None:
++            agent.release_clients()
++        else:
++            assert run.wait_request_workers()
++            bg._release_fork_clients(agent, run)
++        if case == "close_failure":
++            assert not client.is_closed() and run.cleanup_errors
++        else:
++            assert all(item.is_closed() for item in clients)
++            if run is not None:
++                assert not run.cleanup_errors
++        assert not primary.close_threads
++    finally:
++        for gate in gates:
++            gate.set()
++        for thread in threads:
++            if thread.ident is not None:
++                thread.join(5)
++        assert not any(thread.is_alive() for thread in threads), "fixture left a live request worker"
++        for client in clients:
++            if isinstance(client, _SDK) and not client.forbidden:
++                client.fail_close = False
++                client.close()
++
++
++_SCOPE_CASES = [
++    ("chat", True, False, "chat_completions", "custom", True),
++    ("anthropic", True, False, "anthropic_messages", "custom", True),
++    ("moa", True, False, "chat_completions", "moa", False),
++    ("ordinary_chat", False, False, "chat_completions", "custom", False),
++    ("ordinary_anthropic", False, False, "anthropic_messages", "custom", False),
++    ("explicit_chat", True, True, "chat_completions", "custom", False),
++    ("explicit_anthropic", True, True, "anthropic_messages", "custom", False),
++    ("blocked_owner_deadline", True, False, "chat_completions", "custom", True),
++]
++
++
++@pytest.mark.parametrize("case,one_shot,explicit,api_mode,provider,owned", _SCOPE_CASES, ids=[row[0] for row in _SCOPE_CASES])
++def test_exit_ownership_is_scoped_and_waits_for_owners(case, one_shot, explicit, api_mode, provider, owned, monkeypatch):
++    parent = SimpleNamespace(_background_review_one_shot=one_shot, _background_review_lock=threading.Lock(), api_mode=api_mode, provider="custom")
++    resolved = []
++
++    def resolve(*_args, **_kwargs):
++        resolved.append(True)
++        return {"api_mode": api_mode, "provider": provider}
++
++    monkeypatch.setattr(bg, "_resolve_review_runtime", resolve)
++    run = bg.prepare_background_review_run(parent, explicit=explicit)
++    assert run is not None and run.owns_resources is owned
++    assert bool(resolved) is (one_shot and not explicit), "ordinary and explicit review must retain its cheap admission path"
++    if case != "blocked_owner_deadline":
++        bg.finish_background_review_run(parent, run)
++        if owned:
++            assert run.request_done.is_set() and not run.resources_done.is_set()
++            bg.finish_background_review_resources(parent, run)
++            assert bg.shutdown_background_review_for_exit(parent)
++            assert bg.prepare_background_review_run(parent, explicit=explicit) is None
++        else:
++            assert not bg.shutdown_background_review_for_exit(parent)
++            assert not getattr(parent, "_background_review_shutdown", False)
++            assert bg.prepare_background_review_run(parent, explicit=explicit) is not None
++        return
++    release, done, request_acknowledged = threading.Event(), threading.Event(), threading.Event()
++    failures = []
++
++    def work():
++        try:
++            assert release.wait(6), "test failed to release blocked request"
++        except BaseException as error:
++            failures.append(error)
++        finally:
++            done.set()
++
++    worker = threading.Thread(target=work, name="review-blocked-request-fixture")
++    assert run.register_request_worker(worker, done)
++
++    def review_finish():
++        bg.finish_background_review_run(parent, run)
++        request_acknowledged.set()
++        if run.wait_request_workers():
++            bg.finish_background_review_resources(parent, run)
++
++    coordinator = threading.Thread(target=review_finish, name="review-exit-fixture")
++    run.review_thread = coordinator
++    try:
++        worker.start(); coordinator.start()
++        assert request_acknowledged.wait(3)
++        started = time.monotonic()
++        assert not bg.shutdown_background_review_for_exit(parent)
++        elapsed, deadline = time.monotonic() - started, run._deadline
++        assert elapsed < 4.5, "shutdown exceeded its bounded wait under a held worker"
++        assert worker.is_alive() and not run.resources_done.is_set() and run.cleanup_errors
++        again = time.monotonic()
++        assert not bg.shutdown_background_review_for_exit(parent)
++        assert time.monotonic() - again < 0.5 and run._deadline == deadline
++    finally:
++        release.set()
++        for thread in (worker, coordinator):
++            if thread.ident is not None:
++                thread.join(5)
++        assert not worker.is_alive() and not coordinator.is_alive() and not failures

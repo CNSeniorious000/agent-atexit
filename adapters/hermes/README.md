@@ -51,9 +51,9 @@ In the four-task native comparison with Claude Opus 5, control freeform/CLI scor
 
 ## One-shot review shutdown (optional)
 
-Quiet one-shot runs can exit while an automatic Anthropic Messages review still owns its HTTP request. [background-review-shutdown.patch](background-review-shutdown.patch) coordinates review cancellation before session finalization. It tracks streaming and nonstreaming request workers, waits for them and the cancellation thread to exit, then releases the review's SDK clients. All shutdown waits share the existing two-second budget.
+Quiet one-shot runs can exit while an automatic Anthropic Messages or Chat Completions review still owns its HTTP request. [background-review-shutdown.patch](background-review-shutdown.patch) coordinates review cancellation before session finalization. It tracks streaming and nonstreaming request workers, waits for them and the cancellation thread to exit, then releases the review's SDK clients. All shutdown waits share the existing two-second budget.
 
-This separate five-file patch applies to the same pristine Hermes commit `5d59366010640c1d6b8f170d8a4ee109db2bbdef`. It is independent of the MCP visibility patch and is not applied by installation. Its ownership checks target automatic Anthropic Messages reviews in the quiet one-shot path. Interactive sessions, explicit reviews and other provider paths retain their existing cleanup behavior.
+This separate patch (six runtime files and one test file) applies to the same pristine Hermes commit `5d59366010640c1d6b8f170d8a4ee109db2bbdef`. It is independent of the MCP visibility patch and is not applied by installation. Its ownership checks target automatic Anthropic Messages and standard Chat Completions reviews in the quiet one-shot path. OpenAI request clients are tracked at their factory so borrowed primary clients are never treated as privately owned. Interactive sessions, explicit reviews, MoA and other provider paths retain their existing cleanup behavior.
 
 ```sh
 atexit_checkout=/absolute/path/to/agent-atexit
@@ -71,6 +71,12 @@ git -C "$hermes_checkout" apply --reverse --check "$patch_file"
 git -C "$hermes_checkout" apply --reverse "$patch_file"
 ```
 
-The patch SHA-256 is `df7d7ee66294e5f6036b639139c3c8d5078658bd4532ad9213c9121cadfbf116`. Applying and reversing it reproduces the exact candidate and original source bytes with LF checkout settings; repeat application is rejected. Eleven focused checks pass. A real Anthropic SDK against a local HTTP server verifies normal streaming completion, streaming cancellation and nonstreaming cancellation. All three release the original socket and request owner before session finalization; the original baseline leaves both cancellation requests alive at that point and needs test cleanup.
+The patch SHA-256 is `9dcb5dc999cd435598316acd335730c31f946a1b001fedf242b965c0972e6b65`. Applying and reversing it reproduces the exact candidate and original source bytes with LF checkout settings, including removal of the added test; repeat application is rejected. Run its ownership contracts through Hermes' normal test runner:
+
+```sh
+(cd "$hermes_checkout" && bash scripts/run_tests.sh -j 1 tests/agent/test_review_client_ownership.py -q --tb=short --file-retries 0)
+```
+
+A real SDK against a local HTTP server verifies Chat streaming completion, cancellation while waiting for response headers, partial SSE cancellation and partial JSON cancellation, plus the three existing Anthropic lifecycle cases. All seven release the private SDK and request owner before session finalization. The accepted Anthropic-only patch leaves the three cancelled Chat requests alive at that point and needs test cleanup. The invariant tests also cover borrowed clients, cancellation during acquisition, cached clients, failed closure, retained unknown clients and the shared shutdown deadline.
 
 If an owner or client cannot finish cleanup within the bound, shutdown reports failure and keeps its ownership record. Later automatic reviews may remain blocked; eventual cleanup is not guaranteed. Cancelling an unfinished generation does not make that generation complete. These lifecycle checks do not establish improved atexit triggering, batching or model completion.
