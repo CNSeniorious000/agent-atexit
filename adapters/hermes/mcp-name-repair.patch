@@ -1,0 +1,287 @@
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -2333,16 +2333,19 @@
+         return None
+     _norm = lambda s: s.lower().replace("-", "_").replace(" ", "_")  # noqa: E731
+     _camel_snake = lambda s: re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()  # noqa: E731
++    if tool_name in agent.valid_tool_names:
++        return tool_name
++    namespaced = _norm(tool_name).startswith("mcp__")
+ 
+     def _strip_tool_suffix(s: str) -> str | None:
+         lc = s.lower()
+         return next((s[: -len(sfx)].rstrip("_-") for sfx in ("_tool", "-tool", "tool") if lc.endswith(sfx)), None)
+     # Cheap fast-paths first.
+     lowered = tool_name.lower()
+-    if lowered in agent.valid_tool_names:
++    if not namespaced and lowered in agent.valid_tool_names:
+         return lowered
+     normalized = _norm(tool_name)
+-    if normalized in agent.valid_tool_names:
++    if not namespaced and normalized in agent.valid_tool_names:
+         return normalized
+     cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
+     for _ in range(2):  # strip trailing tool-suffix up to twice (TodoTool_tool needs it)
+@@ -2353,9 +2356,33 @@
+                 extra.update((stripped, _norm(stripped), _camel_snake(stripped)))
+         cands |= extra
+     for c in cands:
+-        if c and c in agent.valid_tool_names:
++        if not namespaced and c and c in agent.valid_tool_names and not c.startswith("mcp__"):
+             return c
+-    matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
++    # Resolve inferred MCP names only for exposed tools in this profile. Splitting
++    # an unprefixed name on "__" loses server boundaries; reconstruct the wire name.
++    from model_tools import get_tool_definitions
++    from tools.registry import registry
++    from tools.mcp_tool_schema import mcp_prefixed_tool_name
++    try:
++        direct = get_tool_definitions(enabled_toolsets=getattr(agent, "enabled_toolsets", None), disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True, update_last_resolved=False)
++    except Exception:
++        direct = []  # Failed MCP scope lookup must not disable unrelated builtin repair.
++    exposed = {tool["function"]["name"] for tool in direct} & agent.valid_tool_names
++    # Case/separator repair must be unique too: MCP server/tool names retain case,
++    # so lowercasing a canonical name can select a different registered capability.
++    if namespaced:
++        matches = [name for name in exposed if name.startswith("mcp__") and _norm(name) == _norm(tool_name) and (registry.get_toolset_for_tool(name) or "").startswith("mcp-")]
++        return matches[0] if len(matches) == 1 else None
++    mcp_matches = []
++    if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tool_name):
++        for name in exposed:
++            toolset = registry.get_toolset_for_tool(name)
++            if toolset and toolset.startswith("mcp-") and mcp_prefixed_tool_name(toolset[4:], tool_name) == name:
++                mcp_matches.append(name)
++    if mcp_matches:
++        return mcp_matches[0] if len(mcp_matches) == 1 else None
++    # A fuzzy match must never guess an MCP server or break an ambiguous short name.
++    matches = get_close_matches(lowered, [name for name in agent.valid_tool_names if not name.startswith("mcp__")], n=1, cutoff=0.7)
+     return matches[0] if matches else None
+ 
+ 
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -211,17 +211,19 @@
+ 
+ 
+ def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
+-                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
++                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False, *, update_last_resolved: bool = True) -> List[Dict[str, Any]]:
+     """Tool definitions for model API calls, filtered by toolset.
+ 
+     enabled_toolsets None = all; disabled_toolsets are subtracted after enabling.
+     quiet_mode suppresses status prints and enables memoization.
+     skip_tool_search_assembly returns raw schemas for every enabled tool — only
+     the tool_search bridge should use it (it reads the real, uncollapsed catalog).
++    update_last_resolved=False inspects scope without publishing another session's
++    names to the legacy execute_code fallback; cached schemas are unchanged.
+     """
+     def compute():
+         return _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
+-                                         skip_tool_search_assembly=skip_tool_search_assembly)
++                                         skip_tool_search_assembly=skip_tool_search_assembly, update_last_resolved=update_last_resolved)
+     if not quiet_mode:
+         return compute()
+     cache_key = _tool_defs_cache_key(enabled_toolsets, disabled_toolsets, skip_tool_search_assembly)
+@@ -246,7 +248,7 @@
+                 _tool_defs_cache[cache_key] = cached = result
+     else:
+         global _last_resolved_tool_names
+-        _last_resolved_tool_names = [t["function"]["name"] for t in cached]
++        if update_last_resolved: _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+     # Always a shallow copy: run_agent appends memory/LCM schemas to its list; a
+     # shared list would accumulate duplicate names (HTTP 400 from DeepSeek/Kimi/MiMo).
+     return list(cached)
+@@ -498,7 +500,7 @@
+ 
+ 
+ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
+-                              quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
++                              quiet_mode: bool = False, skip_tool_search_assembly: bool = False, *, update_last_resolved: bool = True) -> List[Dict[str, Any]]:
+     """Uncached implementation of :func:`get_tool_definitions`."""
+     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
+     # Selection is per schema, not per process/profile. Kanban's local checks
+@@ -507,10 +509,11 @@
+     with scoped_kanban_toolset_selection(enabled_toolsets):
+         filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+     global _last_resolved_tool_names
+-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
++    selected_names = [t["function"]["name"] for t in filtered_tools]
++    if update_last_resolved: _last_resolved_tool_names = selected_names
+ 
+     if not quiet_mode:
+-        print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(_last_resolved_tool_names)}"
++        print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(selected_names)}"
+               if filtered_tools else "🛠️  No tools selected (all filtered out or unavailable)")
+     # Normalize schema shapes llama.cpp's grammar converter rejects (bare
+     # "type": "object", string-valued nodes from malformed MCP servers).
+--- /dev/null
++++ b/tests/agent/test_mcp_name_repair.py
+@@ -0,0 +1,168 @@
++"""Real Hermes module contracts for scoped, unambiguous MCP name repair; no model or RPC."""
++import importlib.util, json, os, socket
++from types import SimpleNamespace as NS
++from pathlib import Path
++import pytest
++
++@pytest.fixture
++def world(tmp_path, monkeypatch):
++    import model_tools
++    import tools.registry as regmod
++    import tools.arg_coercion as coercion
++    from tools.mcp_tool_schema import mcp_prefixed_tool_name
++    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
++    home = tmp_path / "profile"; home.mkdir()
++    config = home / "config.yaml"
++    config.write_text(json.dumps({"tools":{"tool_search":{"enabled":"on"}},"model":{"default":"fixture"}}))
++    token = set_hermes_home_override(home)
++    registry = regmod.ToolRegistry()
++    for module in (regmod, model_tools, coercion): monkeypatch.setattr(module,"registry",registry)
++    monkeypatch.setattr(model_tools,"_resolve_active_context_length",lambda:200000)
++    monkeypatch.setattr(socket.socket,"connect",lambda *a,**kw:pytest.fail("Offline contract attempted network"))
++    model_tools._clear_tool_defs_cache()
++    spec = importlib.util.spec_from_file_location("repair_candidate",os.environ.get("REPAIR_SOURCE", str(Path(__file__).resolve().parents[2] / "agent/agent_runtime_helpers.py")))
++    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
++    calls=[]; posts=[]
++    agent=NS(valid_tool_names=set(),enabled_toolsets=[],disabled_toolsets=[],log_prefix="",_invalid_tool_retries=0,_invalid_json_retries=0)
++    agent._repair_tool_call=lambda name:module.repair_tool_call(agent,name)
++    agent._uniquify_tool_call_ids=lambda calls:None
++    agent._buffer_vprint=lambda *a,**kw:None
++    agent._build_assistant_message=lambda msg,reason:{"role":"assistant","content":None,"tool_calls":[{"id":t.id,"type":"function","function":{"name":t.function.name,"arguments":t.function.arguments}} for t in msg.tool_calls]}
++    def register(server="demo",action="operation",*,exposed=True,enabled=True,always=True,check=None,scope=None,handler=None):
++        name=mcp_prefixed_tool_name(server,action); toolset="mcp-"+server
++        schema={"name":name,"description":"Fixture operation","parameters":{"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}}}}}
++        registry.register(name=name,toolset=toolset,schema=schema,handler=handler or (lambda args,**kw:calls.append((name,args,kw)) or json.dumps({"ok":True})),always_load=always,check_fn=check,scope=scope)
++        if exposed: agent.valid_tool_names.add(name)
++        if enabled and toolset not in agent.enabled_toolsets: agent.enabled_toolsets.append(toolset)
++        return name
++    monkeypatch.setattr(model_tools,"_emit_post_tool_call_hook",lambda **kw:posts.append(kw))
++    yield NS(agent=agent,repair=agent._repair_tool_call,register=register,registry=registry,calls=calls,posts=posts,config=config,home=home,module=module,model_tools=model_tools)
++    model_tools._clear_tool_defs_cache()
++    reset_hermes_home_override(token)
++
++@pytest.mark.parametrize("action",["atexit_register","atexit_cancel","operation"])
++def test_unique_exposed_short_name(world,action):
++    name=world.register(server="atexit" if action.startswith("atexit_") else "demo",action=action)
++    assert world.repair(action)==name
++
++@pytest.mark.parametrize("server",["under__score-server","long-server-"*8])
++def test_server_boundary_and_clamped_name_use_real_owner(world,server):
++    name=world.register(server=server)
++    assert world.repair("operation")==name
++
++@pytest.mark.parametrize("unavailable",["not_exposed","disabled","not_enabled","deferred","failed_check","other_profile","unregistered"])
++def test_unavailable_short_name_never_dispatches(world,unavailable):
++    # A long suffix also catches the old fuzzy fallback selecting a forbidden MCP target.
++    action="perform_the_long_registered_operation"
++    name=world.register(action=action,exposed=unavailable!="not_exposed",enabled=unavailable!="not_enabled",always=unavailable!="deferred",check=(lambda:False) if unavailable=="failed_check" else None,scope=str(world.home/"foreign") if unavailable=="other_profile" else None)
++    if unavailable=="disabled":world.agent.disabled_toolsets=["mcp-demo"]
++    if unavailable=="unregistered":world.registry.deregister(name)
++    assert world.repair(action) is None
++    assert not world.calls
++
++def test_explicit_defer_overrides_always_load(world):
++    action="perform_the_long_registered_operation"; name=world.register(action=action)
++    world.config.write_text(json.dumps({"tools":{"tool_search":{"enabled":"on","defer":[name]}},"model":{"default":"fixture"}}))
++    assert world.repair(action) is None
++
++def test_ambiguous_suffix_does_not_fall_through_to_fuzzy(world):
++    action="perform_the_long_registered_operation"
++    world.register(server="one",action=action); world.register(server="two",action=action)
++    assert world.repair(action) is None
++
++def test_disabled_sibling_does_not_hide_unique_authorized_owner(world):
++    first=world.register(server="one"); world.register(server="two")
++    world.agent.disabled_toolsets=["mcp-two"]
++    assert world.repair("operation")==first
++
++def test_direct_name_wins_and_builtin_repairs_stay_compatible(world):
++    world.register(action="terminal"); world.agent.valid_tool_names.update({"terminal","read_file","browser_click"})
++    for raw,wanted in [("terminal","terminal"),("termnal","terminal"),("read file","read_file"),("BrowserClick","browser_click"),("",None)]:assert world.repair(raw)==wanted
++
++def test_no_fuzzy_guess_across_mcp_servers(world):
++    world.register(server="one",action="perform_the_long_registered_operation")
++    assert world.repair("mcp__two__perform_the_long_registered_operation") is None
++
++def test_validation_coercion_and_post_hook_use_canonical_identity(world):
++    from agent.turn_tool_validation import validate_tool_calls
++    name=world.register(server="atexit",action="atexit_register")
++    call=NS(id="fixture-call",type="function",function=NS(name="atexit_register",arguments=json.dumps({"argv":json.dumps(["node","fixture.js"])})))
++    verdict=validate_tool_calls(world.agent,NS(tool_calls=[call]),"tool_calls",messages=[],conversation_history=[],api_call_count=1,effective_task_id="fixture-task")
++    assert verdict.action=="ok" and not verdict.mixed_invalid_batch and call.function.name==name
++    result=world.model_tools.handle_function_call(call.function.name,json.loads(call.function.arguments),task_id="fixture-task",session_id="fixture-session",tool_call_id=call.id,skip_pre_tool_call_hook=True,skip_tool_request_middleware=True,skip_tool_execution_middleware=True)
++    assert json.loads(result)=={"ok":True}
++    assert len(world.calls)==1 and world.calls[0][0:2]==(name,{"argv":["node","fixture.js"]})
++    assert len(world.posts)==1 and world.posts[0]["function_name"]==name and world.posts[0]["session_id"]=="fixture-session" and world.posts[0]["tool_call_id"]==call.id
++
++def test_resolving_does_not_change_visible_schemas(world):
++    name=world.register()
++    before=world.model_tools.get_tool_definitions(enabled_toolsets=world.agent.enabled_toolsets,quiet_mode=True)
++    assert world.repair("operation")==name
++    assert world.model_tools.get_tool_definitions(enabled_toolsets=world.agent.enabled_toolsets,quiet_mode=True)==before
++
++def test_canonical_mcp_handler_still_denies_untrusted_write(world,monkeypatch):
++    from tools import mcp_tool_handlers as handlers, mcp_tool as core, approval_prompt
++    monkeypatch.setattr(core,"_mcp_registry_scope",lambda:"consumer")
++    monkeypatch.setattr(core,"_server_trust_levels",{("consumer","demo"):"untrusted"})
++    monkeypatch.setattr(handlers,"_tool_is_read_only",lambda *a:False)
++    asks=[]; monkeypatch.setattr(approval_prompt,"request_elicitation_consent",lambda *a,**kw:asks.append(kw) or "decline")
++    monkeypatch.setattr(handlers,"_acquire_call_server",lambda *a,**kw:pytest.fail("Denied tool acquired a connection"))
++    name=world.register(handler=handlers._make_tool_handler("demo","operation",5))
++    assert world.repair("operation")==name
++    result=world.model_tools.handle_function_call(name,{"argv":["node","fixture.js"]},skip_pre_tool_call_hook=True,skip_tool_request_middleware=True,skip_tool_execution_middleware=True)
++    assert "did not approve" in json.loads(result)["error"] and len(asks)==1 and not world.calls
++
++@pytest.mark.parametrize("cached",[False,True])
++def test_name_repair_preserves_legacy_fallback_selection(world,cached):
++    name=world.register()
++    if cached: world.model_tools.get_tool_definitions(enabled_toolsets=world.agent.enabled_toolsets,quiet_mode=True)
++    sentinel=["another_session_tool"]
++    world.model_tools._last_resolved_tool_names=sentinel
++    assert world.repair("operation")==name
++    assert world.model_tools._last_resolved_tool_names is sentinel
++
++@pytest.mark.parametrize("quiet,cached",[(False,False),(True,False),(True,True)])
++def test_opt_out_is_read_only_but_default_publication_still_works(world,quiet,cached):
++    name=world.register()
++    if cached: world.model_tools.get_tool_definitions(enabled_toolsets=world.agent.enabled_toolsets,quiet_mode=quiet)
++    sentinel=["another_session_tool"]
++    world.model_tools._last_resolved_tool_names=sentinel
++    result=world.model_tools.get_tool_definitions(enabled_toolsets=world.agent.enabled_toolsets,quiet_mode=quiet,update_last_resolved=False)
++    assert [t["function"]["name"] for t in result]==[name] and world.model_tools._last_resolved_tool_names is sentinel
++    assert world.model_tools.get_tool_definitions(enabled_toolsets=world.agent.enabled_toolsets,quiet_mode=quiet)==result
++    assert world.model_tools._last_resolved_tool_names==[name]
++
++@pytest.mark.parametrize("raw",["mcp__bad__terminal","MCP__BAD__TERMINAL","mcp  bad  terminal"])
++def test_unknown_namespace_cannot_normalize_or_guess_builtin(world,raw):
++    world.agent.valid_tool_names.update({"terminal","bad_terminal","mcp__bad__terminal_tool"})
++    assert world.repair(raw) is None
++
++def test_scope_lookup_failure_cannot_authorize_mcp(world,monkeypatch):
++    world.register()
++    def fail(**kwargs):raise RuntimeError("fixture scope unavailable")
++    monkeypatch.setattr(world.model_tools,"get_tool_definitions",fail)
++    assert world.repair("operation") is None
++
++@pytest.mark.parametrize("server,action,emitted",[("demo","operation","MCP__DEMO__OPERATION"),("Demo","Operation","MCP__Demo__Operation"),("demo","operation","mcp  demo  operation")])
++def test_unique_normalized_canonical_name_retains_compatibility(world,server,action,emitted):
++    name=world.register(server=server,action=action)
++    assert world.repair(emitted)==name
++
++def test_case_colliding_namespaces_refuse_to_choose(world):
++    lower=world.register(server="demo",action="operation")
++    upper=world.register(server="Demo",action="Operation")
++    assert lower!=upper and world.repair("MCP__DEMO__OPERATION") is None
++    assert world.repair(lower)==lower and world.repair(upper)==upper
++
++@pytest.mark.parametrize("blocked",["disabled","deferred","not_exposed","foreign_profile"])
++def test_canonical_case_repair_uses_same_scope_gate(world,blocked):
++    name=world.register(exposed=blocked!="not_exposed",always=blocked!="deferred",scope=str(world.home/"foreign") if blocked=="foreign_profile" else None)
++    if blocked=="disabled":world.agent.disabled_toolsets=["mcp-demo"]
++    assert world.repair(name.upper()) is None
++
++def test_failed_mcp_catalog_keeps_unrelated_builtin_fuzzy_repair(world,monkeypatch):
++    world.register();world.agent.valid_tool_names.add("terminal")
++    def fail(**kwargs):raise RuntimeError("fixture scope unavailable")
++    monkeypatch.setattr(world.model_tools,"get_tool_definitions",fail)
++    assert world.repair("termnal")=="terminal"
++    assert world.repair("operation") is None and world.repair("MCP__DEMO__OPERATION") is None
