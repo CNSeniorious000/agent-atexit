@@ -9,7 +9,7 @@ provisional -> pending -> claimed -> running -> succeeded | failed
 ```
 
 1. `atexit_register` persists a provisional record before returning its capability ID.
-2. Native adapters bind immediately. MCP adapters use the host's `PostToolUse` payload to bind the returned registration ID to the authoritative session ID.
+2. Native adapters bind immediately. MCP adapters use the host's post-tool payload to bind the returned registration ID to the authoritative session ID.
 3. Session close is serialized with binding through a per-session filesystem lock. A binding arriving after close is claimed as a late run instead of being stranded.
 4. Claim writes `claimed` to every selected registration before publishing a run record. This ordering is deliberately at-most-once: a crash may lose work but cannot make a later close claim the same action again.
 5. A detached worker acquires a persistent `run.lock`, executes registrations in reverse creation order, and records command status plus output logs.
@@ -22,11 +22,13 @@ Raw session IDs are hashed together with the host name before they become storag
 
 ### Claude Code
 
-The plugin uses a scoped MCP server and `PostToolUse`/`SessionEnd` command hooks. `SessionEnd` has a short global budget, and plugin-provided timeout fields do not increase it. `/clear` and interactive session switches have host-defined end reasons, so registrations bind to the exact `session_id` supplied by the hook rather than an MCP process environment that may outlive `/clear`.
+The plugin uses a scoped MCP server and `SessionStart`/`PostToolUse`/`SessionEnd` command hooks. `SessionEnd` has a short global budget, and plugin-provided timeout fields do not increase it. `/clear` and interactive session switches have host-defined end reasons, so registrations bind to the exact `session_id` supplied by the hook rather than an MCP process environment that may outlive `/clear`.
 
 ### Codex
 
-Codex uses the same hook script and a plugin-relative bundled MCP command. The legacy bundled-MCP format does not expose `PLUGIN_DATA` to the server, so both the MCP server and Codex hook deliberately use the XDG state fallback. A task switch does not immediately close a thread; `SessionEnd` fires when the root thread is closed, archived, deleted, or unloaded after the documented idle period. Plugin hooks require hash-based user trust. SessionEnd is synchronous and capped at three seconds.
+Codex uses the same hook script and a plugin-relative bundled MCP command. The legacy bundled-MCP format does not expose `PLUGIN_DATA` to the server, so both the MCP server and Codex hook deliberately use the XDG state fallback. [SessionStart](https://learn.chatgpt.com/docs/hooks#sessionstart) explicitly opens or resumes cleanup ownership; duplicate starts while open preserve that ownership. [SessionEnd](https://learn.chatgpt.com/docs/hooks#sessionend) is root-only and fires on normal app exit, when an open conversation is archived or deleted, or after a closed thread has been idle for 30 minutes. Subagent hooks share the parent `session_id`. Plugin hooks require hash-based user trust. SessionEnd is synchronous and capped at three seconds.
+
+Registrations and true reopen boundaries use permanent sequence tickets, not timestamps or a global allocator lock. Tickets are permanent filesystem entries; their count grows with registrations and reopens, and a regressed hint costs extra probes over existing tickets. A first SessionStart creates no reopen boundary. A delayed registration with a known pre-resume sequence is claimed alone and cannot replace a new same-key fallback. Records from older MCP servers have no comparable sequence: while the session is open, they remain pending until cancellation or SessionEnd and cannot replace another fallback. Their original incarnation cannot be recovered from the old format. Hooks also supply no incarnation token: an old tool that only creates its registration after resume, or an old SessionEnd delivered after the new SessionStart, cannot be distinguished from the new incarnation by session ID alone.
 
 ### Kimi Code
 
@@ -39,3 +41,9 @@ The native tool context supplies `sessionID`, so no MCP binding bridge is needed
 ### dsh
 
 The native tool context supplies an owning Agent. The adapter installs exactly one async disposer in that Agent's `ctx.effect`; individual actions are kept inside that disposer and drained serially because separate Cordis effects may complete concurrently. In profiles with the workspace domain, a durable `domain/changed` event also drains a session when its ID enters `archivedSessionIds`; `session/disposed` is an additional idempotent fallback. Registration does not add an approval prompt by default; set the plugin's `ask` config to `true` to make `tools/pre-execute` return `ask` for `atexit_register`.
+
+### Hermes
+
+Shell hooks bind `post_tool_call` results using Hermes's session ID and drain at `on_session_finalize`. `on_session_end` is a turn boundary and never triggers cleanup. Hermes 0.21.3's `hermes chat --oneshot` uses the supported chat lifecycle; its separate top-level `hermes -z PROMPT` path skips finalization. The [adapter configuration](../adapters/hermes/config.yaml) explicitly shares the state directory because MCP filters inherited environment variables. It disables Hermes's outer callback timeout to prevent concurrent callback suppression; each shell command retains its own timeout. This changes callback execution for all plugins in the configured profile.
+
+Resuming a finalized session ID is unsupported: its closed state makes newly bound cleanup run immediately. Start a fresh session instead. Hermes can restore a cached prompt without emitting `on_session_start`, so that event alone cannot reopen ownership reliably. The adapter's optional [review shutdown patch](../adapters/hermes/README.md#one-shot-review-shutdown-optional) owns automatic Anthropic Messages and standard Chat Completions reviews in quiet one-shot runs. Other provider paths retain their existing cleanup behavior; cancelling an unfinished generation does not make it complete.

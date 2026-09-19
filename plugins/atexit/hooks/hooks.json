@@ -1,6 +1,17 @@
 {
   "description": "Bind registrations to their calling session and run them at session end.",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "mcp__plugin_atexit_atexit__atexit_register|mcp__atexit__atexit_register",
@@ -8,7 +19,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\"",
-            "timeout": 1
+            "timeout": 3
           }
         ]
       }
@@ -19,7 +30,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\"",
-            "timeout": 1
+            "timeout": 3
           }
         ]
       }

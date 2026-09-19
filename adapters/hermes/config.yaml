@@ -1,0 +1,18 @@
+# Launch with `hermes chat`; add `-s defer-cleanup` for explicit preload. See README.md for the MCP alwaysLoad compatibility patch.
+plugins:
+  # Hermes otherwise drops overlapping invocations of the same callback. Shell hooks retain their own timeout.
+  hook_callback_timeout: 0
+mcp_servers:
+  atexit:
+    command: node
+    args: [/absolute/path/to/agent-atexit/plugins/atexit/dist/mcp.mjs]
+    env:
+      AGENT_ATEXIT_STATE_DIR: ${HERMES_HOME}/atexit
+hooks:
+  post_tool_call:
+    - matcher: ^mcp__atexit__atexit_register$
+      command: env "AGENT_ATEXIT_STATE_DIR=${HERMES_HOME}/atexit" node "/absolute/path/to/agent-atexit/plugins/atexit/dist/hook.mjs"
+      timeout: 3
+  on_session_finalize:
+    - command: env "AGENT_ATEXIT_STATE_DIR=${HERMES_HOME}/atexit" node "/absolute/path/to/agent-atexit/plugins/atexit/dist/hook.mjs"
+      timeout: 3

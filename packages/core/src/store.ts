@@ -9,6 +9,14 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
 const LOCK_STALE_MS = 10_000;
 
+interface SessionRecord {
+  closedAt?: string;
+  openedSequence?: number;
+  cwd: string;
+  host: string;
+  sessionKey: string;
+}
+
 function validateRegisterInput(input: RegisterInput): void {
   if (!Array.isArray(input.argv) || input.argv.length === 0 || input.argv[0].length === 0 || input.argv.some((part) => typeof part !== "string")) throw new Error("argv must start with a non-empty executable string");
   if (input.cwd !== undefined && !input.cwd.startsWith("/")) throw new Error("cwd must be an absolute path");
@@ -50,6 +58,7 @@ export class ActionStore {
     const registration: RegistrationRecord = {
       argv: [...input.argv] as [string, ...string[]],
       createdAt: new Date().toISOString(),
+      createdSequence: await this.nextSequence(),
       id: randomUUID(),
       state: "provisional",
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -67,13 +76,27 @@ export class ActionStore {
       if (current.state !== "provisional") return { registration: current };
       const key = sessionKey(binding.host, binding.sessionId);
       return this.withSessionLock(key, async () => {
-        if (current.key) await this.cancelReplaced(current, key);
+        const session = await this.getSession(key);
+        // Old writers have no comparable sequence; keep their cleanup pending without letting it replace a current fallback.
+        const late = Boolean(session?.closedAt) || (session?.openedSequence !== undefined && current.createdSequence !== undefined && current.createdSequence < session.openedSequence);
+        if (current.key && current.createdSequence !== undefined && !late) await this.cancelReplaced(current, key);
         const registration: RegistrationRecord = { ...current, boundAt: new Date().toISOString(), cwd: current.cwd ?? binding.cwd, host: binding.host, sessionKey: key, state: "pending" };
         await this.writeRegistration(registration);
-        if (!(await this.isSessionClosed(key))) return { registration };
-        const lateRun = await this.claimPendingLocked(key, binding.host);
+        if (!late) return { registration };
+        const lateRun = await this.claimPendingLocked(key, binding.host, id);
         return { registration: await this.get(id), ...(lateRun === undefined ? {} : { lateRun }) };
       });
+    });
+  }
+
+  async openSession(binding: SessionBinding): Promise<void> {
+    await this.init();
+    const key = sessionKey(binding.host, binding.sessionId);
+    await this.withSessionLock(key, async () => {
+      const session = await this.getSession(key);
+      if (session && !session.closedAt) return;
+      // SessionStart is the only reopen signal; register never revives a closed session. Duplicate starts are harmless.
+      await atomicWrite(this.sessionPath(key), { ...(session?.closedAt ? { openedSequence: await this.nextSequence() } : {}), cwd: binding.cwd, host: binding.host, sessionKey: key });
     });
   }
 
@@ -81,7 +104,7 @@ export class ActionStore {
     await this.init();
     const key = sessionKey(binding.host, binding.sessionId);
     return this.withSessionLock(key, async () => {
-      await atomicWrite(this.sessionPath(key), { closedAt: new Date().toISOString(), cwd: binding.cwd, host: binding.host, sessionKey: key });
+      await atomicWrite(this.sessionPath(key), { ...await this.getSession(key), closedAt: new Date().toISOString(), cwd: binding.cwd, host: binding.host, sessionKey: key });
       return this.claimPendingLocked(key, binding.host);
     });
   }
@@ -136,6 +159,8 @@ export class ActionStore {
   }
 
   async acquireRun(id: string): Promise<Awaited<ReturnType<typeof open>> | undefined> {
+    // Validate the ID before using it in the lock filename, even though the JSON path is not needed here.
+    this.runPath(id);
     try {
       return await open(join(this.root, "runs", `${id}.lock`), "wx", 0o600);
     } catch (error) {
@@ -156,8 +181,8 @@ export class ActionStore {
     }
   }
 
-  private async claimPendingLocked(key: string, host: string): Promise<RunRecord | undefined> {
-    const pending = (await this.list()).filter((registration) => registration.sessionKey === key && registration.state === "pending").toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+  private async claimPendingLocked(key: string, host: string, onlyId?: string): Promise<RunRecord | undefined> {
+    const pending = (await this.list()).filter((registration) => registration.sessionKey === key && registration.state === "pending" && (onlyId === undefined || registration.id === onlyId)).toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
     if (pending.length === 0) return undefined;
     const now = new Date().toISOString();
     const run: RunRecord = { actionIds: pending.map((registration) => registration.id), createdAt: now, host, id: randomUUID(), sessionKey: key, state: "claimed" };
@@ -166,17 +191,34 @@ export class ActionStore {
     return run;
   }
 
-  private async isSessionClosed(key: string): Promise<boolean> {
+  private async getSession(key: string): Promise<SessionRecord | undefined> {
     try {
-      await stat(this.sessionPath(key));
-      return true;
+      return await readJson<SessionRecord>(this.sessionPath(key));
     } catch (error) {
-      if (errorCode(error) === "ENOENT") return false;
+      if (errorCode(error) === "ENOENT") return undefined;
       throw error;
     }
   }
 
+  private async nextSequence(): Promise<number> {
+    // Permanent tickets survive allocator crashes. The hint may lag after concurrent writes; existing tickets prevent reuse.
+    // This namespace is separate from the old order.json counter, which a still-running older MCP server may write.
+    const tickets = join(this.root, "orders"), hint = join(this.root, "sequence.json");
+    await mkdir(tickets, { recursive: true, mode: 0o700 });
+    let order = await readJson<number>(hint).catch((error: unknown) => { if (errorCode(error) === "ENOENT") return 0; throw error; });
+    while (true) {
+      order += 1;
+      if (!Number.isSafeInteger(order) || order < 1) throw new Error("invalid registration order");
+      try { await mkdir(join(tickets, String(order)), { mode: 0o700 }); break; }
+      catch (error) { if (errorCode(error) !== "EEXIST") throw error; }
+    }
+    await atomicWrite(hint, order);
+    return order;
+  }
+
   private async withRecordLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    // IDs also name lock paths; reject traversal before stale-lock recovery can remove a directory.
+    this.recordPath(id);
     return this.withLock(`record-${id}`, operation);
   }
 

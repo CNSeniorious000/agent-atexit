@@ -6,7 +6,7 @@ import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 const root = resolveStateRoot();
 const store = new ActionStore(root);
 const sessions = new Map<string, SessionBinding>();
-const cleanupInstruction = "Before starting any CLI-managed session or long-lived process that could outlive this agent session—such as a browser session, daemon, or dev server—register its exact cleanup argv with atexit_register. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup. For an ego-browser task space, use argv [\"ego-browser\", \"nodejs\", \"-e\", \"await completeTaskSpace(<id>, { keep: false })\"].";
+const cleanupInstruction = "Register scoped fallback cleanup for temporary processes and CLI sessions kept live across tool calls. Cover all newly acquired resources as soon as their real cleanup targets are known. Avoid spending a model turn only on registry bookkeeping when independent task work is ready: use parallel calls or one orchestration invocation. Registration can accompany resource use or inspection. After cleanup succeeds, cancel its fallback alongside work on other resources, including their cleanup. Sequence dependencies within an invocation when possible. Never race cancellation with its own cleanup, delay registration, or invent work to fill a batch.";
 
 function startRun(run: RunRecord): void {
   const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
@@ -28,7 +28,16 @@ async function closeSession(value: SessionBinding): Promise<void> {
 const plugin: PluginModule = {
   id: "agent-atexit.opencode",
   server: async () => ({
+    config: async (config) => {
+      // OpenCode needs explicit plugin skill paths; its legacy SDK omits this config field.
+      const skills = (config as typeof config & { skills?: { paths?: string[] } }).skills ??= {};
+      skills.paths = [...new Set([...(skills.paths ?? []), fileURLToPath(new URL("./skills/", import.meta.url))])];
+    },
     "experimental.chat.system.transform": async (_input, output) => { output.system.push(cleanupInstruction); },
+    "tool.execute.after": async (input, output) => {
+      // Legacy OpenCode keeps the exit code in metadata but omits it from the model-visible result.
+      if (input.tool === "bash" && Number.isInteger(output.metadata?.exit)) output.output += `\n\n<shell_metadata>\nExit code: ${output.metadata.exit}\n</shell_metadata>`;
+    },
     dispose: async () => {
       await Promise.all([...sessions.values()].map(closeSession));
     },
@@ -40,7 +49,7 @@ const plugin: PluginModule = {
     },
     tool: {
       atexit_register: tool({
-        description: `${cleanupInstruction} argv executes directly, without a shell.`,
+        description: "Register scoped cleanup argv for a temporary process or CLI session kept live across calls. Cover all newly acquired resources in the first response after their real cleanup targets are known, alongside use, inspection, or other independent task work. Use parallel calls or one orchestration invocation to avoid a separate bookkeeping turn. Register before creation only if cleanup tolerates the known target's absence. argv executes directly, without a shell.",
         args: {
           argv: tool.schema.array(tool.schema.string().min(1)).min(1),
           cwd: tool.schema.string().optional(),
@@ -57,7 +66,7 @@ const plugin: PluginModule = {
         },
       }),
       atexit_cancel: tool({
-        description: "Cancel a pending atexit registration by its unguessable registration ID.",
+        description: "Remove a fallback without executing it. Confirm resource release before cancelling; a stop acknowledgment alone is insufficient. Never parallelize cancellation with its cleanup or the check establishing release. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
         args: { registration_id: tool.schema.string().uuid() },
         execute: async ({ registration_id }) => JSON.stringify(await store.cancel(registration_id)),
       }),

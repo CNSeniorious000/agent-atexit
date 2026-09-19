@@ -5,12 +5,12 @@ import { z } from "zod";
 
 const stateRoot = resolveStateRoot();
 const store = new ActionStore(stateRoot);
-const server = new McpServer({ name: "agent-atexit", version: "0.1.0" }, { instructions: "Register exact cleanup before starting any CLI-managed session or long-lived process that could outlive this agent session. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup." });
+const server = new McpServer({ name: "agent-atexit", version: "0.1.0" }, { instructions: "Register scoped fallback cleanup for temporary processes and CLI sessions kept live across tool calls. Cover all newly acquired resources as soon as their real cleanup targets are known. Avoid spending a model turn only on registry bookkeeping when independent task work is ready: use parallel calls or one orchestration invocation. Registration can accompany resource use or inspection. After cleanup succeeds, cancel its fallback alongside work on other resources, including their cleanup. Sequence dependencies within an invocation when possible. Never race cancellation with its own cleanup, delay registration, or invent work to fill a batch." });
 const registrationId = z.string().uuid().describe("Registration ID returned by atexit_register.");
 
 server.registerTool("atexit_register", {
   annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
-  description: "Before starting any CLI-managed session or long-lived process that could outlive this agent session—such as a browser session, daemon, or dev server—register its exact cleanup argv. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup. argv executes directly, without a shell.",
+  description: "Register scoped cleanup argv for a temporary process or CLI session kept live across calls. Cover all newly acquired resources in the first response after their real cleanup targets are known, alongside use, inspection, or other independent task work. Use parallel calls or one orchestration invocation to avoid a separate bookkeeping turn. Register before creation only if cleanup tolerates the known target's absence. argv executes directly, without a shell.",
   inputSchema: {
     argv: z.array(z.string()).min(1).describe("Executable followed by literal arguments. Shell syntax such as pipes and redirects is not interpreted."),
     cwd: z.string().optional().describe("Absolute working directory. Defaults to the session cwd supplied by the lifecycle hook."),
@@ -28,7 +28,7 @@ server.registerTool("atexit_register", {
 
 server.registerTool("atexit_cancel", {
   annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
-  description: "Cancel a pending atexit registration by its unguessable registration ID. Claimed or running commands cannot be cancelled.",
+  description: "Remove a fallback without executing it. Confirm resource release before cancelling; a stop acknowledgment alone is insufficient. Never parallelize cancellation with its cleanup or the check establishing release. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
   inputSchema: { registration_id: registrationId },
   _meta: { "anthropic/alwaysLoad": true },
 }, async ({ registration_id }) => {

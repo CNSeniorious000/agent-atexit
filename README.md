@@ -22,6 +22,7 @@ The core persists registrations before returning success, binds them to the host
 | Kimi Code | bundled MCP server | `SessionEnd` | `exit` and `archive`; `SIGHUP` emergency exit can bypass cleanup |
 | OpenCode | native plugin tools | plugin `dispose` and `session.deleted` | Instance unload and permanent session deletion, not a logical session-close event |
 | dsh | native `ctx.tools` tools | workspace archive or per-agent `ctx.effect` disposer | Web archive and Agent teardown; whole-process teardown has a five-second grace |
+| Hermes | bundled MCP server and shell hooks | `on_session_finalize` | Chat session shutdown/reset; top-level `-z` does not emit this hook in 0.21.3 |
 
 Every adapter hands claimed work to a detached worker immediately because host shutdown budgets are not long-command runtimes. `SIGKILL`, power loss, host bugs, and forceful process-tree termination can still prevent execution.
 
@@ -88,6 +89,10 @@ Registration is immediate by default. To require approval for every `atexit_regi
   config:
     ask: true
 ```
+
+### Hermes
+
+Merge the [Hermes configuration](adapters/hermes/config.yaml) and install the cleanup skill following [the adapter instructions](adapters/hermes/README.md). The configuration explicitly shares MCP/hook state and prevents Hermes from dropping overlapping lifecycle callbacks.
 
 ## Development
 

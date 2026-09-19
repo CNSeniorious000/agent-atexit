@@ -1,0 +1,152 @@
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index f660e3b..fffb1fd 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -669,6 +669,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+     if system_message is not None:
+         context_parts.append(system_message)
+     context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
++    # Use only schemas exposed to this agent; deferred or filtered tools do not advertise server guidance.
++    from tools.mcp_server_instructions import server_instruction_parts
++    function_tools = [t.get("function") for t in getattr(agent, "tools", None) or () if isinstance(t, dict) and t.get("type") == "function"]
++    context_parts.extend(server_instruction_parts(t.get("name") for t in function_tools if isinstance(t, dict) and isinstance(t.get("name"), str)))
+     if coding_workspace_parts:
+         context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
+     else:
+diff --git a/tests/tools/test_mcp_server_instructions.py b/tests/tools/test_mcp_server_instructions.py
+new file mode 100644
+index 0000000..9e89572
+--- /dev/null
++++ b/tests/tools/test_mcp_server_instructions.py
+@@ -0,0 +1,103 @@
++import threading
++from types import SimpleNamespace
++import pytest
++
++from tools import mcp_server_instructions as helper
++
++@pytest.fixture
++def core(monkeypatch):
++    from tools import mcp_tool
++    for name, value in {"_lock": threading.Lock(), "_servers": {}, "_server_tool_scopes": {}, "_lazy_server_configs": {}, "_server_trust_levels": {}, "_mcp_tool_server_names": {"mcp_a_register": "a", "mcp_a_cancel": "a", "mcp_b_run": "b"}}.items():
++        monkeypatch.setattr(mcp_tool, name, value)
++    monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: None)
++    return mcp_tool
++
++def connected(core, key="a", text="existing guidance", trust="full", policy=None):
++    core._servers[key] = SimpleNamespace(initialize_result=SimpleNamespace(instructions=text))
++    core._server_trust_levels[key if policy is None else policy] = trust
++
++
++def test_only_exposed_tools_and_one_block_per_server(core):
++    connected(core); connected(core, "b", "hidden")
++    assert helper.server_instruction_parts(["mcp_a_register", "mcp_a_cancel", "terminal"]) == ['MCP server "a" tool guidance:\nexisting guidance']
++    assert helper.server_instruction_parts([]) == []
++
++@pytest.mark.parametrize("trust", ["untrusted", "wrong", None, True])
++def test_nonfull_policy_does_not_inject(core, trust):
++    connected(core, trust=trust)
++    assert helper.server_instruction_parts(["mcp_a_register"]) == []
++
++@pytest.mark.parametrize("text", [None, "", "  ", 123, {"instructions": "text"}])
++def test_absent_or_malformed_instructions(core, text):
++    connected(core, text=text)
++    assert helper.server_instruction_parts(["mcp_a_register"]) == []
++
++
++def test_lazy_or_disconnected_server_does_not_connect(core):
++    core._lazy_server_configs["a"] = {"command": "do-not-execute"}; core._server_trust_levels["a"] = "full"
++    assert helper.server_instruction_parts(["mcp_a_register"]) == []
++
++
++def test_profile_uses_own_connection(monkeypatch, core):
++    monkeypatch.setattr(core, "_mcp_registry_scope", lambda: "red")
++    connected(core, ("blue", "a"), "secret"); connected(core, ("red", "a"), "red text")
++    assert helper.server_instruction_parts(["mcp_a_register"]) == ['MCP server "a" tool guidance:\nred text']
++
++
++def test_adoption_uses_consuming_profiles_trust(monkeypatch, core):
++    monkeypatch.setattr(core, "_mcp_registry_scope", lambda: "red")
++    connected(core, ("blue", "a"), "shared text"); core._server_tool_scopes[("blue", "a")] = {"red", "blue"}
++    assert helper.server_instruction_parts(["mcp_a_register"]) == []
++    core._server_trust_levels[("red", "a")] = "untrusted"
++    assert helper.server_instruction_parts(["mcp_a_register"]) == []
++    core._server_trust_levels[("red", "a")] = "full"
++    assert helper.server_instruction_parts(["mcp_a_register"]) == ['MCP server "a" tool guidance:\nshared text']
++
++
++def test_no_unadopted_profile_leak(monkeypatch, core):
++    monkeypatch.setattr(core, "_mcp_registry_scope", lambda: "red")
++    connected(core, ("blue", "a"), "secret"); core._server_trust_levels[("red", "a")] = "full"
++    assert helper.server_instruction_parts(["mcp_a_register"]) == []
++
++
++def test_bare_scope_does_not_read_scoped_connection(core):
++    connected(core, ("blue", "a"), "secret"); core._server_trust_levels["a"] = "full"
++    assert helper.server_instruction_parts(["mcp_a_register"]) == []
++
++
++def test_deterministic_order(core):
++    connected(core); connected(core, "b", "b text")
++    assert helper.server_instruction_parts(["mcp_b_run", "mcp_a_cancel"]) == helper.server_instruction_parts(["mcp_a_cancel", "mcp_b_run"])
++
++
++@pytest.mark.parametrize("extra_schema", [None, False, "invalid", {"type": "function", "function": None}, {"type": "function", "function": []}, {"type": "function", "function": {"name": []}}, {"type": "provider", "name": "mcp_b_run"}, {"type": "provider", "function": {"name": "mcp_b_run"}}])
++def test_actual_prompt_builder_uses_direct_schemas(monkeypatch, core, extra_schema):
++    connected(core); connected(core, "b", "hidden")
++    from agent import system_prompt as module
++    monkeypatch.setattr(module, "_identity_parts", lambda *a: (["identity"], False))
++    for name in ("_guidance_parts", "_alibaba_identity_part", "_auto_load_parts", "_post_workspace_parts", "_context_files_part", "_memory_parts", "_plugin_section_blocks"):
++        monkeypatch.setattr(module, name, lambda *a: [])
++    monkeypatch.setattr(module, "_skills_prompt", lambda *a: "skills")
++    monkeypatch.setattr(module, "_coding_parts", lambda *a: ([], [], []))
++    monkeypatch.setattr(module, "_frozen_plugin_prompt_sections", lambda *a: ())
++    monkeypatch.setattr(module, "_timestamp_line", lambda *a: "timestamp")
++    monkeypatch.setattr(module._pb, "build_environment_hints", lambda: "environment")
++    agent = SimpleNamespace(valid_tool_names={"mcp_a_register", "mcp_b_run"}, tools=[{"type": "function", "function": {"name": "mcp_a_register"}}, extra_schema])
++    parts = module.build_system_prompt_parts(agent)
++    assert parts["context"] == 'MCP server "a" tool guidance:\nexisting guidance'
++    agent.tools = []
++    assert module.build_system_prompt_parts(agent)["context"] == ""
++
++
++def test_prompt_builder_without_tool_schema_snapshot(monkeypatch, core):
++    connected(core)
++    from agent import system_prompt as module
++    monkeypatch.setattr(module, "_identity_parts", lambda *a: (["identity"], False))
++    for name in ("_guidance_parts", "_alibaba_identity_part", "_auto_load_parts", "_post_workspace_parts", "_context_files_part", "_memory_parts", "_plugin_section_blocks"):
++        monkeypatch.setattr(module, name, lambda *a: [])
++    monkeypatch.setattr(module, "_skills_prompt", lambda *a: "skills")
++    monkeypatch.setattr(module, "_coding_parts", lambda *a: ([], [], []))
++    monkeypatch.setattr(module, "_frozen_plugin_prompt_sections", lambda *a: ())
++    monkeypatch.setattr(module, "_timestamp_line", lambda *a: "timestamp")
++    monkeypatch.setattr(module._pb, "build_environment_hints", lambda: "environment")
++    assert module.build_system_prompt_parts(SimpleNamespace(valid_tool_names=set()))["context"] == ""
+diff --git a/tools/mcp_server_instructions.py b/tools/mcp_server_instructions.py
+new file mode 100644
+index 0000000..1532d41
+--- /dev/null
++++ b/tools/mcp_server_instructions.py
+@@ -0,0 +1,22 @@
++"""Expose connected MCP guidance only for the current agent's direct, trusted tools."""
++import json
++from tools.mcp_tool_common import _core
++from tools.mcp_tool_scope import _resolve_server_key, _server_key
++
++
++def server_instruction_parts(tool_names):
++    scope = _core._mcp_registry_scope()
++    parts = []
++    with _core._lock:
++        names = {_core._mcp_tool_server_names[name] for name in tool_names if name in _core._mcp_tool_server_names}
++        for name in sorted(names):
++            # A shared connection does not transfer its owner's trust to an adopting profile.
++            policy_key = _server_key(name, scope, current=False)
++            if _core._server_trust_levels.get(policy_key) != _core._TRUST_FULL:
++                continue
++            key = _resolve_server_key(name, scope, current=False)
++            server = _core._servers.get(key)
++            instructions = getattr(getattr(server, "initialize_result", None), "instructions", None)
++            if isinstance(instructions, str) and instructions.strip():
++                parts.append(f"MCP server {json.dumps(name)} tool guidance:\n{instructions.strip()}")
++    return parts
