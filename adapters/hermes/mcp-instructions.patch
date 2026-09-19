@@ -1,5 +1,5 @@
 diff --git a/agent/system_prompt.py b/agent/system_prompt.py
-index f660e3b..fffb1fd 100644
+index f660e3b..cc96896 100644
 --- a/agent/system_prompt.py
 +++ b/agent/system_prompt.py
 @@ -669,6 +669,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
@@ -9,16 +9,25 @@ index f660e3b..fffb1fd 100644
 +    # Use only schemas exposed to this agent; deferred or filtered tools do not advertise server guidance.
 +    from tools.mcp_server_instructions import server_instruction_parts
 +    function_tools = [t.get("function") for t in getattr(agent, "tools", None) or () if isinstance(t, dict) and t.get("type") == "function"]
-+    context_parts.extend(server_instruction_parts(t.get("name") for t in function_tools if isinstance(t, dict) and isinstance(t.get("name"), str)))
++    mcp_instruction_parts = server_instruction_parts(t.get("name") for t in function_tools if isinstance(t, dict) and isinstance(t.get("name"), str))
      if coding_workspace_parts:
          context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
      else:
+@@ -679,6 +683,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
+     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
+     volatile_parts: List[str] = [skills_prompt, *_memory_parts(agent)]
++    # Keep full-trust guidance near the request; plugin framing must remain adjacent to the timestamp for cached-prompt restoration.
++    volatile_parts.extend(mcp_instruction_parts)
+     # Plugin sections are confined to one coarse anchor in the volatile tail so
+     # a resumed process can reconstruct the stable prefix without re-running plugins.
+     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
 diff --git a/tests/tools/test_mcp_server_instructions.py b/tests/tools/test_mcp_server_instructions.py
 new file mode 100644
-index 0000000..9e89572
+index 0000000..2521895
 --- /dev/null
 +++ b/tests/tools/test_mcp_server_instructions.py
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,167 @@
 +import threading
 +from types import SimpleNamespace
 +import pytest
@@ -91,45 +100,110 @@ index 0000000..9e89572
 +    assert helper.server_instruction_parts(["mcp_b_run", "mcp_a_cancel"]) == helper.server_instruction_parts(["mcp_a_cancel", "mcp_b_run"])
 +
 +
-+@pytest.mark.parametrize("extra_schema", [None, False, "invalid", {"type": "function", "function": None}, {"type": "function", "function": []}, {"type": "function", "function": {"name": []}}, {"type": "provider", "name": "mcp_b_run"}, {"type": "provider", "function": {"name": "mcp_b_run"}}])
-+def test_actual_prompt_builder_uses_direct_schemas(monkeypatch, core, extra_schema):
-+    connected(core); connected(core, "b", "hidden")
++@pytest.fixture
++def prompt_builder(monkeypatch):
 +    from agent import system_prompt as module
 +    monkeypatch.setattr(module, "_identity_parts", lambda *a: (["identity"], False))
-+    for name in ("_guidance_parts", "_alibaba_identity_part", "_auto_load_parts", "_post_workspace_parts", "_context_files_part", "_memory_parts", "_plugin_section_blocks"):
++    for name in ("_guidance_parts", "_alibaba_identity_part", "_auto_load_parts", "_post_workspace_parts", "_context_files_part", "_memory_parts"):
 +        monkeypatch.setattr(module, name, lambda *a: [])
 +    monkeypatch.setattr(module, "_skills_prompt", lambda *a: "skills")
 +    monkeypatch.setattr(module, "_coding_parts", lambda *a: ([], [], []))
 +    monkeypatch.setattr(module, "_frozen_plugin_prompt_sections", lambda *a: ())
-+    monkeypatch.setattr(module, "_timestamp_line", lambda *a: "timestamp")
++    monkeypatch.setattr(module, "_timestamp_line", lambda *a: "Conversation started: 2026-09-20")
 +    monkeypatch.setattr(module._pb, "build_environment_hints", lambda: "environment")
++    return module
++
++
++@pytest.mark.parametrize("extra_schema", [None, False, "invalid", {"type": "function", "function": None}, {"type": "function", "function": []}, {"type": "function", "function": {"name": []}}, {"type": "provider", "name": "mcp_b_run"}, {"type": "provider", "function": {"name": "mcp_b_run"}}])
++def test_actual_prompt_builder_uses_direct_schemas(core, prompt_builder, extra_schema):
++    connected(core); connected(core, "b", "hidden")
++    module = prompt_builder
 +    agent = SimpleNamespace(valid_tool_names={"mcp_a_register", "mcp_b_run"}, tools=[{"type": "function", "function": {"name": "mcp_a_register"}}, extra_schema])
 +    parts = module.build_system_prompt_parts(agent)
-+    assert parts["context"] == 'MCP server "a" tool guidance:\nexisting guidance'
++    guidance = helper.server_instruction_parts(["mcp_a_register"])[0]
++    assert guidance not in parts["context"]
++    assert parts["volatile"].index("skills") < parts["volatile"].index(guidance) < parts["volatile"].index("Conversation started:")
++    assert "hidden" not in "\n".join(parts.values())
 +    agent.tools = []
-+    assert module.build_system_prompt_parts(agent)["context"] == ""
++    assert "MCP server" not in "\n".join(module.build_system_prompt_parts(agent).values())
 +
 +
-+def test_prompt_builder_without_tool_schema_snapshot(monkeypatch, core):
++def test_prompt_builder_without_tool_schema_snapshot(core, prompt_builder):
 +    connected(core)
-+    from agent import system_prompt as module
-+    monkeypatch.setattr(module, "_identity_parts", lambda *a: (["identity"], False))
-+    for name in ("_guidance_parts", "_alibaba_identity_part", "_auto_load_parts", "_post_workspace_parts", "_context_files_part", "_memory_parts", "_plugin_section_blocks"):
-+        monkeypatch.setattr(module, name, lambda *a: [])
-+    monkeypatch.setattr(module, "_skills_prompt", lambda *a: "skills")
-+    monkeypatch.setattr(module, "_coding_parts", lambda *a: ([], [], []))
-+    monkeypatch.setattr(module, "_frozen_plugin_prompt_sections", lambda *a: ())
-+    monkeypatch.setattr(module, "_timestamp_line", lambda *a: "timestamp")
-+    monkeypatch.setattr(module._pb, "build_environment_hints", lambda: "environment")
-+    assert module.build_system_prompt_parts(SimpleNamespace(valid_tool_names=set()))["context"] == ""
++    module = prompt_builder
++    assert "MCP server" not in "\n".join(module.build_system_prompt_parts(SimpleNamespace(valid_tool_names=set())).values())
++
++
++@pytest.mark.parametrize("workspace", [[], ["coding workspace"]])
++def test_guidance_preserves_prefix_and_repeated_builds(monkeypatch, core, prompt_builder, workspace):
++    module = prompt_builder
++    monkeypatch.setattr(module, "_memory_parts", lambda *a: ["memory context"])
++    monkeypatch.setattr(module, "_coding_parts", lambda *a: (["coding prefix"], workspace, ["coding trailing"]))
++    monkeypatch.setattr(module, "_post_workspace_parts", lambda *a: ["post workspace"])
++    agent = SimpleNamespace(valid_tool_names={"mcp_a_register"}, tools=[{"type": "function", "function": {"name": "mcp_a_register"}}])
++    before = module.build_system_prompt_parts(agent)
++    connected(core)
++    after = module.build_system_prompt_parts(agent)
++    guidance = helper.server_instruction_parts(["mcp_a_register"])[0]
++    assert before["stable"] == after["stable"] and before["context"] == after["context"]
++    assert before["volatile"] == after["volatile"].replace(guidance + "\n\n", "", 1)
++    assert "\n".join(after.values()).count(guidance) == 1
++    tail = after["volatile"]
++    assert tail.index("skills") < tail.index("memory context") < tail.index(guidance) < tail.index("Conversation started:") < tail.index("environment")
++    assert module.build_system_prompt_parts(agent) == after
++    assert core._servers["a"].initialize_result.instructions == "existing guidance"
++
++
++def test_guidance_preserves_plugin_restoration(monkeypatch, core, prompt_builder):
++    from hermes_cli.plugins import RenderedPluginSystemPromptSection, format_system_prompt_sections
++    module = prompt_builder
++    section = RenderedPluginSystemPromptSection(id="example", content="plugin context", position="after_memory", plugin="example")
++    monkeypatch.setattr(module, "_frozen_plugin_prompt_sections", lambda *a: (section,))
++    connected(core)
++    agent = SimpleNamespace(valid_tool_names={"mcp_a_register"}, tools=[{"type": "function", "function": {"name": "mcp_a_register"}}])
++    parts = module.build_system_prompt_parts(agent)
++    prompt = "\n\n".join(p for p in parts.values() if p)
++    guidance = helper.server_instruction_parts(["mcp_a_register"])[0]
++    restored = module._restore_plugin_prompt_sections(prompt)
++    assert len(restored) == 1
++    assert (restored[0].id, restored[0].content, restored[0].position) == (section.id, section.content, section.position)
++    assert prompt.index(guidance) < prompt.index(format_system_prompt_sections([section]))
++    assert module.build_system_prompt_parts(agent) == parts
++
++
++@pytest.mark.parametrize("marker", ["<!-- hermes-plugin-sections:start -->", "<!-- hermes-plugin-sections:end -->"])
++def test_reserved_partial_frames_are_omitted(core, marker):
++    connected(core, text="guidance " + marker)
++    assert helper.server_instruction_parts(["mcp_a_register"]) == []
++
++
++def test_instruction_text_cannot_restore_as_plugin_state(core, prompt_builder):
++    from hermes_cli.plugins import RenderedPluginSystemPromptSection, format_system_prompt_sections
++    section = RenderedPluginSystemPromptSection(id="quoted", content="quoted text", position="after_memory", plugin="quoted")
++    connected(core, text="quoted example\n" + format_system_prompt_sections([section]))
++    agent = SimpleNamespace(valid_tool_names={"mcp_a_register"}, tools=[{"type": "function", "function": {"name": "mcp_a_register"}}])
++    parts = prompt_builder.build_system_prompt_parts(agent)
++    assert prompt_builder._restore_plugin_prompt_sections("\n\n".join(p for p in parts.values() if p)) == ()
++    assert "MCP server" not in "\n".join(parts.values())
++
++
++def test_server_label_preserves_unicode_and_json_escaping(core):
++    name = 'café "tools"'
++    core._mcp_tool_server_names["mcp_cafe_run"] = name
++    connected(core, key=name)
++    label = helper.server_instruction_parts(["mcp_cafe_run"])[0].split(" tool guidance:")[0]
++    import json
++    assert label == "MCP server " + json.dumps(name, ensure_ascii=False)
++    assert 'café' in label and json.loads(label.removeprefix('MCP server ')) == name
 diff --git a/tools/mcp_server_instructions.py b/tools/mcp_server_instructions.py
 new file mode 100644
-index 0000000..1532d41
+index 0000000..918e81c
 --- /dev/null
 +++ b/tools/mcp_server_instructions.py
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,25 @@
 +"""Expose connected MCP guidance only for the current agent's direct, trusted tools."""
 +import json
++from hermes_cli.plugins_dispatch import PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START
 +from tools.mcp_tool_common import _core
 +from tools.mcp_tool_scope import _resolve_server_key, _server_key
 +
@@ -148,5 +222,7 @@ index 0000000..1532d41
 +            server = _core._servers.get(key)
 +            instructions = getattr(getattr(server, "initialize_result", None), "instructions", None)
 +            if isinstance(instructions, str) and instructions.strip():
-+                parts.append(f"MCP server {json.dumps(name)} tool guidance:\n{instructions.strip()}")
++                # Trusted prose must not impersonate renderer-owned plugin state when restoring a cached prompt.
++                if PLUGIN_SECTIONS_START in instructions or PLUGIN_SECTIONS_END in instructions: continue
++                parts.append(f"MCP server {json.dumps(name, ensure_ascii=False)} tool guidance:\n{instructions.strip()}")
 +    return parts
