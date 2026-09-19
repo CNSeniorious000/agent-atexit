@@ -47,7 +47,29 @@ The shipped patch is byte-identical to the frozen candidate (SHA-256 `1a1678e304
 
 Adapter-local validation recorded both contracts failing on control and passing on candidate; the existing focused suite passed 322 tests with one host skip. They cover live/cache metadata equivalence, selective legacy refresh, strict booleans, metadata isolation, explicit deferral, profile scope, and registry generation.
 
-In the four-task native comparison with Claude Opus 5, control freeform/CLI scored **4/6 and 4/6**, while candidate scored **5/6 and 6/6**. The six checks cover provenance, timely registration, useful batching, safe cancellation, actual resource lifecycle, and session-bound cancellation. Candidate freeform still omitted the final beta cancellation. Initial requests exposed all three atexit tools, adding 2,591 schema characters. The native executor ran these batches sequentially; the evidence concerns same-response batching. These samples do not establish reliable batching or cancellation across tasks.
+In the earlier four-task comparison of the visibility patch alone with Claude Opus 5, control freeform/CLI scored **4/6 and 4/6**, while candidate scored **5/6 and 6/6**. The six checks cover provenance, timely registration, useful batching, safe cancellation, actual resource lifecycle, and session-bound cancellation. Candidate freeform still omitted the final beta cancellation. Initial requests exposed all three atexit tools, adding 2,591 schema characters. The native executor ran these batches sequentially; the evidence concerns same-response batching. These samples do not establish reliable batching or cancellation across tasks, or validate the separate instruction carrier below.
+
+## MCP server instructions (optional)
+
+Hermes 0.21.3 stores MCP `initialize.instructions` but omits them from its system prompt. [mcp-instructions.patch](mcp-instructions.patch) passes existing server guidance into the context tier when that server has a tool schema directly exposed to the current agent. It changes two runtime files, adding 26 lines, and includes 25 contract cases. No atexit-specific guidance is added to Hermes.
+
+Only fully trusted servers in the consuming profile qualify. Schemas must use Hermes's `type: function` wrapper with a string `function.name`. The label does not authenticate claims inside these trusted instructions. Shared connections do not inherit their owner's trust; hidden, deferred, unadopted and disconnected servers contribute nothing. Instructions are included once per server. Existing prompt caching remains: use a fresh session, and do not expect immediate refresh after lazy tool discovery, trust changes or resuming a cached prompt.
+
+The modified input file was verified against pristine Hermes commit `5d59366010640c1d6b8f170d8a4ee109db2bbdef`. The patch does not overlap the other compatibility patches or apply automatically. Use the MCP visibility setup above to expose atexit's tools. Check applicability first:
+
+```sh
+atexit_checkout=/absolute/path/to/agent-atexit
+hermes_checkout=/absolute/path/to/hermes-agent
+patch_file="$atexit_checkout/adapters/hermes/mcp-instructions.patch"
+git -C "$hermes_checkout" apply --check "$patch_file"
+git -C "$hermes_checkout" apply "$patch_file"
+git -C "$hermes_checkout" apply --reverse --check "$patch_file"
+(cd "$hermes_checkout" && bash scripts/run_tests.sh -j 1 tests/tools/test_mcp_server_instructions.py -q --tb=short --file-retries 0)
+```
+
+To revert, run `git -C "$hermes_checkout" apply --reverse --check "$patch_file"`, then `git -C "$hermes_checkout" apply --reverse "$patch_file"`.
+
+The patch SHA-256 is `250ac44bab934afb38982484612244c9d675786bc84d66f69ab674f795aa1d71`. The packaged files match the tested candidate exactly; application, reversal and repeat-apply rejection were checked. The combined suite passed 190 cases, including the 25 carrier contracts, 61 name-repair cases and existing prompt, restore and trust checks. All 25 carrier contracts passed again after correcting two regression cases to exercise the inner schema guard. This validates delivery and isolation, not reliable model decisions. Native results and their remaining failures are documented in the PR; the original 20-task goal remains incomplete.
 
 ## MCP tool name repair (optional)
 
@@ -69,7 +91,7 @@ To revert, run `git -C "$hermes_checkout" apply --reverse --check "$patch_file"`
 
 Validation covers all 61 contract cases and eight existing name-repair regressions, exact application/reversal and repeat-apply rejection. In a deterministic native CLI replay against a local scripted provider, the previous runtime rejects both names missing the `mcp__` prefix; the patched runtime uses real MCP calls and shipped hooks to bind and cancel both records in the actual session. Both sessions close and all four service processes and ports are released without evaluator rescue. This replay tests the host, not model decisions.
 
-Original model tasks still omitted registration with the earlier short-name repair, including a trial with a different skill summary. A later instruction-carrier trial exposed the missing-prefix error and premature cancellation. Neither the summary nor the instruction carrier is shipped; the new prefix repair has deterministic dispatch evidence only. The name repair does not establish reliable triggering, timely registration or batching, and those failed observations remain in the evaluation record.
+Original model tasks still omitted registration with the earlier short-name repair, including a trial with a different skill summary. A later instruction-carrier trial exposed the missing-prefix error and premature cancellation. The summary is not shipped. The optional instruction carrier above has separate delivery tests; the prefix repair has deterministic dispatch evidence only. The name repair does not establish reliable triggering, timely registration or batching, and those failed observations remain in the evaluation record.
 
 ## One-shot review shutdown (optional)
 
