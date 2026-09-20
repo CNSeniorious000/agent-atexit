@@ -4,4 +4,6 @@ OpenCode adapter for [agent-atexit](https://github.com/CNSeniorious000/agent-ate
 
 Use `npm: "@ai-sdk/openai"` for GPT reasoning models on a Responses-capable endpoint so OpenCode can carry reasoning payloads across tool calls. In our OpenCode 1.18.31 checks, the Chat-compatible path dropped the gateway's `reasoning_items` extension.
 
+For automatically generated reasoning variants on custom models, set `reasoning: true` in the model entry. In OpenCode 1.18.31, `--variant high` alone sent no effort setting for an undeclared custom Opus model; declaring the capability made its task requests send adaptive thinking with high effort. This configures the request and does not guarantee cleanup behavior.
+
 See the repository README for installation, security, and lifecycle limitations.
