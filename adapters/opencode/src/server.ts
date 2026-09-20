@@ -34,6 +34,40 @@ const plugin: PluginModule = {
       skills.paths = [...new Set([...(skills.paths ?? []), fileURLToPath(new URL("./skills/", import.meta.url))])];
     },
     "experimental.chat.system.transform": async (_input, output) => { output.system.push(cleanupInstruction); },
+    "experimental.chat.messages.transform": async (_input, output) => {
+      const reminder = `\n\n<system-reminder>\n${cleanupInstruction}\n</system-reminder>`;
+      // Preserve native execution intervals in every request; completion order is otherwise absent from tool text.
+      // The host retains this array; replace copied entries rather than the array itself.
+      output.messages.forEach((message, messageIndex) => {
+        if (message.info.role !== "assistant") return message;
+        let changed = false;
+        const parts = message.parts.map((part) => {
+          if (part.type !== "tool" || (part.state.status !== "completed" && part.state.status !== "error")) return part;
+          const time = part.state.time;
+          if (!time || ("compacted" in time && time.compacted !== undefined) || !Number.isInteger(time.start) || !Number.isInteger(time.end) || time.end < time.start) return part;
+          const start = new Date(time.start), end = new Date(time.end);
+          if (!Number.isFinite(start.valueOf()) || !Number.isFinite(end.valueOf())) return part;
+          const timing = `\n\n<tool_timing start="${start.toISOString()}" end="${end.toISOString()}" />`;
+          const original = part.state.status === "completed" ? part.state.output : part.state.error;
+          if (original.endsWith(timing) || original.endsWith(timing + reminder)) return part;
+          const state = part.state.status === "completed" ? { ...part.state, output: original + timing } : { ...part.state, error: original + timing };
+          changed = true;
+          return { ...part, state };
+        });
+        if (changed) output.messages[messageIndex] = { ...message, parts };
+      });
+      const index = output.messages.length - 1, message = output.messages[index];
+      if (message?.info.role !== "assistant") return;
+      const partIndex = message.parts.findLastIndex((part) => part.type === "tool" && part.tool !== "todowrite" && (part.state.status === "completed" || part.state.status === "error"));
+      const part = message.parts[partIndex];
+      if (part?.type !== "tool" || (part.state.status !== "completed" && part.state.status !== "error")) return;
+      const original = part.state.status === "completed" ? part.state.output : part.state.error;
+      if (original.endsWith(reminder)) return;
+      // This is a request-only copy: preserve the stored result and never accumulate reminders in history.
+      const state = part.state.status === "completed" ? { ...part.state, output: original + reminder } : { ...part.state, error: original + reminder };
+      const parts = message.parts.slice(); parts[partIndex] = { ...part, state };
+      output.messages[index] = { ...message, parts };
+    },
     "tool.execute.after": async (input, output) => {
       // Legacy OpenCode keeps the exit code in metadata but omits it from the model-visible result.
       if (input.tool === "bash" && Number.isInteger(output.metadata?.exit)) output.output += `\n\n<shell_metadata>\nExit code: ${output.metadata.exit}\n</shell_metadata>`;
@@ -71,7 +105,7 @@ const plugin: PluginModule = {
         execute: async ({ registration_id }) => JSON.stringify(await store.cancel(registration_id)),
       }),
       atexit_list: tool({
-        description: "Inspect atexit registrations by IDs previously returned to this session.",
+        description: "Inspect atexit registrations by IDs previously returned to this session. Avoid spending a model turn only on registry bookkeeping when independent task work is ready.",
         args: { registration_ids: tool.schema.array(tool.schema.string().uuid()).min(1).max(100) },
         execute: async ({ registration_ids }) => JSON.stringify({ registrations: await store.list(registration_ids) }),
       }),
