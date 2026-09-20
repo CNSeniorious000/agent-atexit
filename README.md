@@ -48,6 +48,16 @@ codex plugin marketplace add CNSeniorious000/agent-atexit --ref main
 codex plugin add atexit@agent-atexit
 ```
 
+For a local checkout, run from the repository root:
+
+```bash
+bun run build
+codex plugin marketplace add .
+codex plugin add atexit@agent-atexit
+```
+
+Codex installs a cached copy. After local edits, rebuild and rerun `codex plugin add atexit@agent-atexit`, then start a fresh Codex process to load the updated tools and skill.
+
 Review and trust the bundled hooks with `/hooks`; Codex intentionally does not trust changed plugin hooks automatically.
 
 ### Kimi Code
