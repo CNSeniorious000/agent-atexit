@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionStore } from "@agent-atexit/core";
+import { cleanupInstruction } from "../src/instructions";
 
 const roots: string[] = [];
 
@@ -12,18 +13,39 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function runHook(root: string, input: unknown): Promise<void> {
+async function runHook(root: string, input: unknown, env: NodeJS.ProcessEnv = {}): Promise<string> {
   const hook = resolve(import.meta.dirname, "../../../plugins/atexit/dist/hook.mjs");
-  const child = spawn("node", [hook], { env: { ...process.env, AGENT_ATEXIT_RUN_INLINE: "1", AGENT_ATEXIT_STATE_DIR: root }, stdio: ["pipe", "pipe", "pipe"] });
-  let stderr = "";
+  const child = spawn("node", [hook], { env: { ...process.env, AGENT_ATEXIT_RUN_INLINE: "1", AGENT_ATEXIT_STATE_DIR: root, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "", stdout = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => { stdout += chunk; });
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => { stderr += chunk; });
   child.stdin.end(JSON.stringify(input));
-  const [code] = (await once(child, "exit")) as [number | null];
+  const [code] = (await once(child, "close")) as [number | null];
   if (code !== 0) throw new Error(`hook exited ${String(code)}: ${stderr}`);
+  return stdout;
 }
 
 describe("portable lifecycle hook", () => {
+  test("adds independent guidance to parallel Claude Bash results without binding output UUIDs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-guidance-")); roots.push(root);
+    const store = new ActionStore(root), registration = await store.register({ argv: ["echo", "unrelated"] });
+    const outputs = await Promise.all([1, 2].map(() => runHook(root, { cwd: root, session_id: "claude-session", hook_event_name: "PostToolUse", tool_name: "Bash", tool_response: { stdout: registration.id } }, { PLUGIN_ROOT: undefined })));
+    for (const stdout of outputs) expect(JSON.parse(stdout)).toEqual({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: cleanupInstruction } });
+    expect(await store.get(registration.id)).toEqual(registration);
+  });
+
+  test("does not send Claude context or bind Bash output in other hosts", async () => {
+    for (const host of ["codex", "kimi", "hermes"]) {
+      const root = await mkdtemp(join(tmpdir(), "agent-atexit-guidance-host-")); roots.push(root);
+      const store = new ActionStore(root), registration = await store.register({ argv: ["echo", "unrelated"] });
+      const stdout = await runHook(root, { cwd: root, session_id: host, hook_event_name: host === "hermes" ? "post_tool_call" : "PostToolUse", tool_name: "Bash", client_type: host === "kimi" ? "kimi_code_cli" : undefined, tool_response: { registration_id: registration.id } }, { PLUGIN_ROOT: host === "codex" ? root : undefined });
+      expect(stdout).toBe("");
+      expect(await store.get(registration.id)).toEqual(registration);
+    }
+  });
+
   test("binds an MCP registration and executes it when the same session ends", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-hook-"));
     roots.push(root);

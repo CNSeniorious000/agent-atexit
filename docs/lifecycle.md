@@ -22,7 +22,7 @@ Raw session IDs are hashed together with the host name before they become storag
 
 ### Claude Code
 
-The plugin uses a scoped MCP server and `SessionStart`/`PostToolUse`/`SessionEnd` command hooks. `SessionEnd` has a short global budget, and plugin-provided timeout fields do not increase it. `/clear` and interactive session switches have host-defined end reasons, so registrations bind to the exact `session_id` supplied by the hook rather than an MCP process environment that may outlive `/clear`.
+The plugin uses a scoped MCP server and `SessionStart`/`PostToolUse`/`SessionEnd` command hooks. After successful Bash calls, `PostToolUse` repeats the same MCP cleanup guidance beside the result; parallel Bash calls each add a copy. The hook adds context to the next request without a separate model invocation or changing registration ownership. `SessionEnd` has a short global budget, and plugin-provided timeout fields do not increase it. `/clear` and interactive session switches have host-defined end reasons, so registrations bind to the exact `session_id` supplied by the hook rather than an MCP process environment that may outlive `/clear`.
 
 ### Codex
 

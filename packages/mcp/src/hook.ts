@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ActionStore, executeRun, resolveStateRoot, type RunRecord, type SessionBinding } from "@agent-atexit/core";
+import { cleanupInstruction } from "./instructions";
 
 interface HookInput {
   client_type?: string;
@@ -58,6 +59,11 @@ async function main(): Promise<void> {
   const input = JSON.parse((await readStdin()) || "{}") as HookInput;
   if (!input.session_id || !input.cwd || !input.hook_event_name) return;
   const host = detectHost(input);
+  if ((input.hook_event_name === "PostToolUse" || input.hook_event_name === "post_tool_call") && input.tool_name === "Bash") {
+    // Bash output can contain unrelated UUIDs; it must never enter registration binding.
+    if (host === "claude-code") console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: cleanupInstruction } }));
+    return;
+  }
   // Codex's legacy bundled-MCP format resolves cwd but does not expose PLUGIN_DATA to the server. Ignore the hook-only compatibility variables so both sides use the XDG state fallback.
   const root = host === "codex" ? resolveStateRoot({ ...process.env, CLAUDE_PLUGIN_DATA: undefined, PLUGIN_DATA: undefined }) : resolveStateRoot();
   const store = new ActionStore(root);
