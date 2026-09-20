@@ -5,7 +5,7 @@ plugins:
 mcp_servers:
   atexit:
     command: node
-    args: [/absolute/path/to/agent-atexit/plugins/atexit/dist/mcp.mjs]
+    args: [/absolute/path/to/agent-atexit/plugins/atexit/dist/mcp.mjs, --hermes]
     env:
       AGENT_ATEXIT_STATE_DIR: ${HERMES_HOME}/atexit
 hooks:

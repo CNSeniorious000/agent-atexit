@@ -51,6 +51,8 @@ In the earlier four-task comparison of the visibility patch alone with Claude Op
 
 ## MCP server instructions (optional)
 
+The supplied MCP command uses `--hermes` to select concise guidance on timely registration, release evidence and cancellation with ready work. Tool schemas, descriptions and behavior are unchanged. Receiving these instructions requires the compatibility patch below on Hermes 0.21.3.
+
 Hermes 0.21.3 stores MCP `initialize.instructions` but omits them from its system prompt. [mcp-instructions.patch](mcp-instructions.patch) places existing server guidance after skills and memory in the cached system prompt when that server has a tool schema directly exposed to the current agent. It changes two runtime files, adding 31 lines, and includes 32 contract cases. No atexit-specific guidance is added to Hermes.
 
 Only fully trusted servers in the consuming profile qualify. Schemas must use Hermes's `type: function` wrapper with a string `function.name`. The label does not authenticate claims inside these trusted instructions. Instructions containing reserved plugin persistence markers are omitted so prose cannot become restored plugin state. Shared connections do not inherit their owner's trust; hidden, deferred, unadopted and disconnected servers contribute nothing. Instructions are included once per server, before the plugin block so its cached-prompt restoration framing remains intact. The static tier stays unchanged; existing prompt caching remains: use a fresh session, and do not expect immediate refresh after lazy tool discovery, trust changes or resuming a cached prompt.

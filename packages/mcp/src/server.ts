@@ -2,12 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ActionStore, resolveStateRoot } from "@agent-atexit/core";
 import { z } from "zod";
-import { cleanupInstruction, codexCleanupInstruction } from "./instructions";
+import { cleanupInstruction, codexCleanupInstruction, hermesCleanupInstruction } from "./instructions";
 
 const codex = process.argv.includes("--codex");
 const stateRoot = resolveStateRoot();
 const store = new ActionStore(stateRoot);
-const server = new McpServer({ name: "agent-atexit", version: "0.1.0" }, { instructions: codex ? codexCleanupInstruction : cleanupInstruction });
+const server = new McpServer({ name: "agent-atexit", version: "0.1.0" }, { instructions: codex ? codexCleanupInstruction : process.argv.includes("--hermes") ? hermesCleanupInstruction : cleanupInstruction });
 const registrationId = z.string().uuid().describe("Registration ID returned by atexit_register.");
 
 server.registerTool("atexit_register", {

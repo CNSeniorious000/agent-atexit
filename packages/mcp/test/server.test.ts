@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { cleanupInstruction, codexCleanupInstruction } from "../src/instructions";
+import { cleanupInstruction, codexCleanupInstruction, hermesCleanupInstruction } from "../src/instructions";
 
 const roots: string[] = [];
 
@@ -14,15 +14,21 @@ afterEach(async () => {
 });
 
 describe("agent-atexit MCP server", () => {
-  test("selects Codex guidance through its plugin manifest without changing the Claude tool contract", async () => {
+  test("selects host guidance through shipped configs without changing shared tool contracts", async () => {
     const pluginRoot = resolve(import.meta.dirname, "../../../plugins/atexit");
     const snapshots = [];
-    for (const [host, instructions] of [["codex", codexCleanupInstruction], ["claude", cleanupInstruction]]) {
-      const manifest = JSON.parse(await readFile(join(pluginRoot, `.${host}-plugin/plugin.json`), "utf8"));
-      const { mcpServers: { atexit: config } } = JSON.parse(await readFile(resolve(pluginRoot, manifest.mcpServers), "utf8"));
+    for (const [host, instructions] of [["codex", codexCleanupInstruction], ["claude", cleanupInstruction], ["hermes", hermesCleanupInstruction]]) {
+      let config: { command: string; args: string[]; cwd?: string };
+      if (host === "hermes") {
+        const hermes = Bun.YAML.parse(await readFile(resolve(pluginRoot, "../../adapters/hermes/config.yaml"), "utf8")) as { mcp_servers: { atexit: typeof config } };
+        config = hermes.mcp_servers.atexit;
+      } else {
+        const manifest = JSON.parse(await readFile(join(pluginRoot, `.${host}-plugin/plugin.json`), "utf8"));
+        config = JSON.parse(await readFile(resolve(pluginRoot, manifest.mcpServers), "utf8")).mcpServers.atexit;
+      }
       const root = await mkdtemp(join(tmpdir(), "agent-atexit-guidance-")); roots.push(root);
       const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
-      const args = (config.args as string[]).map((arg) => arg.replace("${CLAUDE_PLUGIN_ROOT}", pluginRoot));
+      const args = (config.args as string[]).map((arg) => arg.replace("${CLAUDE_PLUGIN_ROOT}", pluginRoot).replace("/absolute/path/to/agent-atexit", resolve(pluginRoot, "../..")));
       const transport = new StdioClientTransport({ command: config.command, args, cwd: resolve(pluginRoot, config.cwd ?? "."), env: { ...env, AGENT_ATEXIT_STATE_DIR: root } });
       const client = new Client({ name: "agent-atexit-guidance-test", version: "0.1.0" });
       try {
@@ -33,7 +39,8 @@ describe("agent-atexit MCP server", () => {
         await client.close();
       }
     }
-    const [codexTools, claudeTools] = snapshots;
+    const [codexTools, claudeTools, hermesTools] = snapshots;
+    expect(hermesTools).toEqual(claudeTools);
     expect(codexTools!.map(({ description, ...contract }) => contract)).toEqual(claudeTools!.map(({ description, ...contract }) => contract));
     expect(codexTools!.filter((tool, i) => tool.description !== claudeTools![i]!.description).map(({ name }) => name).toSorted()).toEqual(["atexit_cancel", "atexit_register"]);
   });
