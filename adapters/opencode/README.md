@@ -6,4 +6,6 @@ Use `npm: "@ai-sdk/openai"` for GPT reasoning models on a Responses-capable endp
 
 For automatically generated reasoning variants on custom models, set `reasoning: true` in the model entry. In OpenCode 1.18.31, `--variant high` alone sent no effort setting for an undeclared custom Opus model; declaring the capability made its task requests send adaptive thinking with high effort. This configures the request and does not guarantee cleanup behavior.
 
+For file-based `@ai-sdk/google` overrides, use `google` as the provider ID. In OpenCode 1.18.31 with SDK 3.0.73, an arbitrary ID such as `eval` can silently drop `thinkingConfig` before sending the request.
+
 See the repository README for installation, security, and lifecycle limitations.
