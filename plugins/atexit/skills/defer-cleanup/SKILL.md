@@ -1,6 +1,6 @@
 ---
 name: defer-cleanup
-description: Fallback cleanup for temporary processes and CLI sessions.
+description: Register fallback cleanup with atexit tools for temporary processes or CLI sessions kept live across tool calls.
 ---
 
 # Deferred cleanup

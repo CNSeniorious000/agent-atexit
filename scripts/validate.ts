@@ -17,7 +17,7 @@ for (const path of manifests) {
   if (manifest.version !== expectedVersion) throw new Error(`${path} must use version ${expectedVersion}`);
   if (manifest.name !== "atexit" && manifest.name !== "@agent-atexit/opencode" && manifest.name !== "@agent-atexit/dsh") throw new Error(`${path} has an unexpected name`);
 }
-const codexMcp = await readJson("plugins/atexit/.mcp.json");
+const codexMcp = await readJson("plugins/atexit/.mcp.codex.json");
 const claudeMcp = await readJson("plugins/atexit/.mcp.claude.json");
 if (!("mcpServers" in codexMcp)) throw new Error("Codex MCP config must contain an mcpServers map");
 if (!("mcpServers" in claudeMcp)) throw new Error("Claude MCP config must contain an mcpServers map");

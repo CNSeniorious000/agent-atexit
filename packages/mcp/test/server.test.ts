@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+import { cleanupInstruction, codexCleanupInstruction } from "../src/instructions";
 
 const roots: string[] = [];
 
@@ -12,6 +14,30 @@ afterEach(async () => {
 });
 
 describe("agent-atexit MCP server", () => {
+  test("selects Codex guidance through its plugin manifest without changing the Claude tool contract", async () => {
+    const pluginRoot = resolve(import.meta.dirname, "../../../plugins/atexit");
+    const snapshots = [];
+    for (const [host, instructions] of [["codex", codexCleanupInstruction], ["claude", cleanupInstruction]]) {
+      const manifest = JSON.parse(await readFile(join(pluginRoot, `.${host}-plugin/plugin.json`), "utf8"));
+      const { mcpServers: { atexit: config } } = JSON.parse(await readFile(resolve(pluginRoot, manifest.mcpServers), "utf8"));
+      const root = await mkdtemp(join(tmpdir(), "agent-atexit-guidance-")); roots.push(root);
+      const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+      const args = (config.args as string[]).map((arg) => arg.replace("${CLAUDE_PLUGIN_ROOT}", pluginRoot));
+      const transport = new StdioClientTransport({ command: config.command, args, cwd: resolve(pluginRoot, config.cwd ?? "."), env: { ...env, AGENT_ATEXIT_STATE_DIR: root } });
+      const client = new Client({ name: "agent-atexit-guidance-test", version: "0.1.0" });
+      try {
+        await client.connect(transport);
+        expect(client.getInstructions()).toBe(instructions);
+        snapshots.push((await client.listTools()).tools);
+      } finally {
+        await client.close();
+      }
+    }
+    const [codexTools, claudeTools] = snapshots;
+    expect(codexTools!.map(({ description, ...contract }) => contract)).toEqual(claudeTools!.map(({ description, ...contract }) => contract));
+    expect(codexTools!.filter((tool, i) => tool.description !== claudeTools![i]!.description).map(({ name }) => name).toSorted()).toEqual(["atexit_cancel", "atexit_register"]);
+  });
+
   test("registers, lists, and cancels by capability ID", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-mcp-"));
     roots.push(root);
