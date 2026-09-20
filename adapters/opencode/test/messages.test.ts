@@ -51,7 +51,7 @@ test("fresh requests preserve completed prefixes and leave stored history unchan
   expect(result(two.messages[1]!, 0)).toBe("left" + timing); expect(result(two.messages[1]!, 1)).toBe("right" + timing + reminder);
   expect(result(first)).toBe("first"); expect(result(second, 1)).toBe("right");
   const once = structuredClone(two), retained = two.messages.slice(); await transform({}, two); expect(two).toEqual(once);
-  two.messages.forEach((entry, index) => expect(entry).toBe(retained[index]));
+  two.messages.forEach((entry, index) => expect(entry).toBe(retained[index]!));
 });
 
 test("historical planning and pending messages do not suppress later work reminders", async () => {
