@@ -43,13 +43,23 @@ for (const status of ["completed", "error"] as const) test(`${status}: host arra
   const once = structuredClone(output); await transform({}, output); expect(output).toEqual(once);
 });
 
-test("fresh requests keep historical intervals and move only the reminder", async () => {
+test("fresh requests preserve completed prefixes and leave stored history unchanged", async () => {
   const { transform, reminder } = await fixture(), first = message([part("completed", "first")]), second = message([part("completed", "left"), part("error", "right")]);
   const one = { messages: [first] }; await transform({}, one);
   const two = { messages: [first, second] }; await transform({}, two);
-  expect(result(one.messages[0]!)).toBe("first" + timing + reminder); expect(result(two.messages[0]!)).toBe("first" + timing);
+  expect(result(one.messages[0]!)).toBe("first" + timing + reminder); expect(two.messages[0]).toEqual(one.messages[0]);
   expect(result(two.messages[1]!, 0)).toBe("left" + timing); expect(result(two.messages[1]!, 1)).toBe("right" + timing + reminder);
   expect(result(first)).toBe("first"); expect(result(second, 1)).toBe("right");
+  const once = structuredClone(two), retained = two.messages.slice(); await transform({}, two); expect(two).toEqual(once);
+  two.messages.forEach((entry, index) => expect(entry).toBe(retained[index]));
+});
+
+test("historical planning and pending messages do not suppress later work reminders", async () => {
+  const { transform, reminder } = await fixture(), pending = { ...part(), state: { status: "running", input: {}, time: { start: 1000 } } } as ToolPart;
+  const output = { messages: [message([part("completed", "plan", "todowrite")]), message([pending]), message([part("error", "failure")])] };
+  await transform({}, output);
+  expect(result(output.messages[0]!)).toBe("plan" + timing); expect(output.messages[1]!.parts[0]).toBe(pending);
+  expect(result(output.messages[2]!)).toBe("failure" + timing + reminder);
 });
 
 test("pending siblings and planning results do not become policy carriers", async () => {
@@ -59,11 +69,11 @@ test("pending siblings and planning results do not become policy carriers", asyn
   expect(result(output.messages[0]!, 2)).toBe("plan" + timing);
 });
 
-test("planning-only and user turns do not repeat policy on earlier work", async () => {
-  const { transform } = await fixture(), old = message([part()]), todo = message([part("completed", "plan", "todowrite")]);
+test("planning-only and user turns preserve prior reminders without adding new ones", async () => {
+  const { transform, reminder } = await fixture(), old = message([part()]), todo = message([part("completed", "plan", "todowrite")]);
   for (const last of [todo, message([], "user"), message([])]) {
     const output = { messages: [old, last] }; await transform({}, output);
-    expect(result(output.messages[0]!)).toBe("raw" + timing); expect(JSON.stringify(output)).not.toContain("<system-reminder>");
+    expect(result(output.messages[0]!)).toBe("raw" + timing + reminder); expect(JSON.stringify(output.messages[1])).not.toContain("<system-reminder>");
   }
   const empty = { messages: [] }; await transform({}, empty); expect(empty.messages).toEqual([]);
 });

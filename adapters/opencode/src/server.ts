@@ -56,17 +56,19 @@ const plugin: PluginModule = {
         });
         if (changed) output.messages[messageIndex] = { ...message, parts };
       });
-      const index = output.messages.length - 1, message = output.messages[index];
-      if (message?.info.role !== "assistant") return;
-      const partIndex = message.parts.findLastIndex((part) => part.type === "tool" && part.tool !== "todowrite" && (part.state.status === "completed" || part.state.status === "error"));
-      const part = message.parts[partIndex];
-      if (part?.type !== "tool" || (part.state.status !== "completed" && part.state.status !== "error")) return;
-      const original = part.state.status === "completed" ? part.state.output : part.state.error;
-      if (original.endsWith(reminder)) return;
-      // This is a request-only copy: preserve the stored result and never accumulate reminders in history.
-      const state = part.state.status === "completed" ? { ...part.state, output: original + reminder } : { ...part.state, error: original + reminder };
-      const parts = message.parts.slice(); parts[partIndex] = { ...part, state };
-      output.messages[index] = { ...message, parts };
+      output.messages.forEach((message, index) => {
+        if (message.info.role !== "assistant") return;
+        const partIndex = message.parts.findLastIndex((part) => part.type === "tool" && part.tool !== "todowrite" && (part.state.status === "completed" || part.state.status === "error"));
+        const part = message.parts[partIndex];
+        if (part?.type !== "tool" || (part.state.status !== "completed" && part.state.status !== "error")) return;
+        const original = part.state.status === "completed" ? part.state.output : part.state.error;
+        if (original.endsWith(reminder)) return;
+        // Keep prior request prefixes stable: moving this suffix can break provider session matching and signed context.
+        // Request-only copies leave stored results unchanged, with one reminder per eligible assistant message.
+        const state = part.state.status === "completed" ? { ...part.state, output: original + reminder } : { ...part.state, error: original + reminder };
+        const parts = message.parts.slice(); parts[partIndex] = { ...part, state };
+        output.messages[index] = { ...message, parts };
+      });
     },
     "tool.execute.after": async (input, output) => {
       // Legacy OpenCode keeps the exit code in metadata but omits it from the model-visible result.

@@ -8,4 +8,6 @@ For automatically generated reasoning variants on custom models, set `reasoning:
 
 For file-based `@ai-sdk/google` overrides, use `google` as the provider ID. In OpenCode 1.18.31 with SDK 3.0.73, an arbitrary ID such as `eval` can silently drop `thinkingConfig` before sending the request.
 
+The adapter repeats its cleanup guidance beside each assistant message's last finished non-planning tool result, including historical results. Keeping those request prefixes stable supports content-based session matching. Each eligible message retains one 95-word reminder; stored history stays unchanged. This does not guarantee provider affinity or signature preservation.
+
 See the repository README for installation, security, and lifecycle limitations.
