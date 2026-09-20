@@ -6,7 +6,7 @@ import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 const root = resolveStateRoot();
 const store = new ActionStore(root);
 const sessions = new Map<string, SessionBinding>();
-const cleanupInstruction = "Register scoped fallback cleanup for temporary processes and CLI sessions kept live across tool calls. Cover all newly acquired resources as soon as their real cleanup targets are known. Avoid spending a model turn only on registry bookkeeping when independent task work is ready: use parallel calls or one orchestration invocation. Registration can accompany resource use or inspection. After cleanup succeeds, cancel its fallback alongside work on other resources, including their cleanup. Sequence dependencies within an invocation when possible. Never race cancellation with its own cleanup, delay registration, or invent work to fill a batch.";
+const cleanupInstruction = "Register scoped fallback cleanup for temporary processes and CLI sessions kept live across tool calls. At acquisition, register alongside creation when the known target tolerates absence, or with the first use or inspection after creation returns the target. Avoid spending a model turn only on registry bookkeeping when independent task work is ready: use parallel calls or one orchestration invocation. Verification must distinguish resource absence from unexpected errors. After cleanup succeeds, cancel its fallback alongside work on other resources, including their cleanup. Sequence dependencies within an invocation when possible. Never race cancellation with its own cleanup, delay registration, or invent work to fill a batch.";
 
 function startRun(run: RunRecord): void {
   const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
@@ -85,7 +85,7 @@ const plugin: PluginModule = {
     },
     tool: {
       atexit_register: tool({
-        description: "Register scoped cleanup argv for a temporary process or CLI session kept live across calls. Cover all newly acquired resources in the first response after their real cleanup targets are known, alongside use, inspection, or other independent task work. Use parallel calls or one orchestration invocation to avoid a separate bookkeeping turn. Register before creation only if cleanup tolerates the known target's absence. argv executes directly, without a shell.",
+        description: "Register scoped fallback cleanup for a temporary process or CLI session you acquired and will keep live across calls. Pair registration with the resource’s first use, inspection, or other independent work once its real cleanup target is known. If the target is known before creation and cleanup tolerates absence, register alongside creation. Use parallel calls or one orchestration invocation; avoid a separate bookkeeping turn without delaying registration. argv executes directly, without a shell.",
         args: {
           argv: tool.schema.array(tool.schema.string().min(1)).min(1),
           cwd: tool.schema.string().optional(),
@@ -102,7 +102,7 @@ const plugin: PluginModule = {
         },
       }),
       atexit_cancel: tool({
-        description: "Remove a fallback without executing it. Confirm resource release before cancelling; a stop acknowledgment alone is insufficient. Never parallelize cancellation with its cleanup or the check establishing release. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
+        description: "Remove a fallback without executing it. Before cancelling, verify the registered resource is gone; a stop acknowledgment alone is insufficient. Distinguish expected absence from probe errors; keep the fallback when checks are inconclusive. Never parallelize cancellation with its cleanup or the check establishing release. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
         args: { registration_id: tool.schema.string().uuid() },
         execute: async ({ registration_id }) => JSON.stringify(await store.cancel(registration_id)),
       }),
