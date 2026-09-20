@@ -6,7 +6,7 @@ import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 const root = resolveStateRoot();
 const store = new ActionStore(root);
 const sessions = new Map<string, SessionBinding>();
-const cleanupInstruction = "Register scoped fallback cleanup for temporary processes and CLI sessions kept live across tool calls. At acquisition, register alongside creation when the known target tolerates absence, or with the first use or inspection after creation returns the target. Avoid spending a model turn only on registry bookkeeping when independent task work is ready: use parallel calls or one orchestration invocation. Verification must distinguish resource absence from unexpected errors. After cleanup succeeds, cancel its fallback alongside work on other resources, including their cleanup. Sequence dependencies within an invocation when possible. Never race cancellation with its own cleanup, delay registration, or invent work to fill a batch.";
+const cleanupInstruction = "Plan resource work together with atexit bookkeeping. Register acquired resources as soon as their cleanup targets are known. Only independent calls may run in parallel; await the actual prerequisite outcome before dependent work, not merely a request acknowledgment. Sequence dependencies within one orchestration invocation when possible. Cancel only after the registered resource is confirmed gone; failed access or inspection is inconclusive. Include eligible cancellation with the next independent task work. Standalone bookkeeping is fine when no independent work remains. Never invent work or delay registration to batch.";
 
 function startRun(run: RunRecord): void {
   const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
