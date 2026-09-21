@@ -1,0 +1,2 @@
+# Empty context lines in a unified diff contain a space; preserve the frozen patch bytes.
+*.patch -text whitespace=-blank-at-eol
