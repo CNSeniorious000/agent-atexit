@@ -1,0 +1,160 @@
+diff --git a/packages/opencode/src/session/processor.ts b/packages/opencode/src/session/processor.ts
+index 9f85309..b7f2519 100644
+--- a/packages/opencode/src/session/processor.ts
++++ b/packages/opencode/src/session/processor.ts
+@@ -113,6 +113,7 @@ const layer = Layer.effect(
+         reasoningMap: {},
+       }
+       let aborted = false
++      let calledTool = false
+ 
+       const parse = (e: unknown) =>
+         MessageV2.fromError(e, {
+@@ -332,6 +333,7 @@ const layer = Layer.effect(
+             if (ctx.assistantMessage.summary) {
+               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
+             }
++            calledTool = true
+             yield* ensureToolCall(value)
+             const input = isRecord(value.input) ? value.input : { value: value.input }
+             yield* updateToolCall(value.id, (match) => ({
+@@ -671,6 +673,15 @@ const layer = Layer.effect(
+               (cause) => !Cause.hasInterruptsOnly(cause),
+               (cause) => Effect.fail(Cause.squash(cause)),
+             ),
++            Effect.catch((error) => {
++              if (!calledTool || !SessionRetry.retryable(parse(error), input.model.providerID)) {
++                return Effect.fail(error)
++              }
++              // Replaying streamInput would hide tool effects, including interrupted work.
++              // Let cleanup settle tool states and the prompt loop rebuild the next request.
++              ctx.assistantMessage.finish = "tool-calls"
++              return Effect.void
++            }),
+             Effect.retry(
+               SessionRetry.policy({
+                 provider: input.model.providerID,
+diff --git a/packages/opencode/test/session/processor-effect.test.ts b/packages/opencode/test/session/processor-effect.test.ts
+index c67f82d..4aa08c5 100644
+--- a/packages/opencode/test/session/processor-effect.test.ts
++++ b/packages/opencode/test/session/processor-effect.test.ts
+@@ -870,6 +870,119 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
+   ),
+ )
+ 
++for (const scenario of [
++  { state: "completed", error: { message: "read ETIMEDOUT", type: "server_error" }, result: "continue" },
++  { state: "error", error: { message: "read ETIMEDOUT", type: "server_error" }, result: "continue" },
++  { state: "running", error: { message: "read ETIMEDOUT", type: "server_error" }, result: "continue" },
++  { state: "completed", error: { message: "invalid request", type: "invalid_request_error" }, result: "stop" },
++  {
++    state: "completed",
++    error: { message: '{"type":"error","error":{"code":"context_length_exceeded"}}' },
++    result: "compact",
++  },
++] as const) {
++  const state = scenario.state
++  it.live(`session.processor handles ${scenario.error.message} with a ${state} tool`, () =>
++    provideTmpdirServer(
++      ({ dir, llm }) =>
++        Effect.gen(function* () {
++          const database = yield* Database.Service
++          const { processors, session, provider } = yield* boot()
++          const release = defer<void>()
++          const stream = reply().tool("launch", {}).item()
++          if (stream.type !== "sse") throw new Error("expected stream")
++          // Break the stream only after the processor has persisted the tool state.
++          yield* llm.push(
++            raw({
++              head: [...stream.head, ...stream.tail.slice(0, -1)],
++              wait: release.promise,
++              tail: [{ error: scenario.error }],
++            }),
++          )
++          yield* llm.text("recovered")
++
++          const chat = yield* session.create({})
++          const parent = yield* user(chat.id, "launch once")
++          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
++          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
++          const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
++          const executions: string[] = []
++          const input: LLM.StreamInput = {
++            user: parent,
++            sessionID: chat.id,
++            model: mdl,
++            agent: agent(),
++            system: [],
++            messages: [{ role: "user", content: "launch once" }],
++            tools: {
++              launch: tool({
++                description: "Launch a resource",
++                inputSchema: z.object({}),
++                execute: async (_, options) => {
++                  executions.push("launch")
++                  if (state === "error") throw new Error("launch failed after a side effect")
++                  if (state === "running") {
++                    await new Promise<void>((resolve) =>
++                      options.abortSignal!.addEventListener("abort", () => resolve(), { once: true }),
++                    )
++                    throw new Error("interrupted")
++                  }
++                  return { title: "Launched", output: "resource:one", metadata: {} }
++                },
++              }),
++            },
++          }
++          const run = yield* handle.process(input).pipe(Effect.forkChild)
++          yield* waitFor(
++            MessageV2.parts(msg.id).pipe(
++              Effect.map((parts) => parts.find((part) => part.type === "tool" && part.state.status === state)),
++              Effect.provideService(Database.Service, database),
++            ),
++            "tool state was not persisted",
++          )
++          release.resolve()
++          expect(yield* Fiber.join(run)).toBe(scenario.result)
++          expect(yield* llm.calls).toBe(1)
++          expect(executions).toEqual(["launch"])
++          if (scenario.result !== "continue") {
++            expect(Boolean(handle.message.error)).toBe(scenario.result === "stop")
++            return
++          }
++          expect(handle.message.error).toBeUndefined()
++
++          // Use the same history conversion as the prompt loop, then inspect the next HTTP request.
++          const parts = yield* MessageV2.parts(msg.id)
++          const messages = yield* MessageV2.toModelMessagesEffect(
++            [
++              { info: parent, parts: yield* MessageV2.parts(parent.id) },
++              { info: handle.message, parts },
++            ],
++            mdl,
++          )
++          const next = yield* processors.create({
++            assistantMessage: yield* assistant(chat.id, parent.id, path.resolve(dir)),
++            sessionID: chat.id,
++            model: mdl,
++          })
++          expect(yield* next.process({ ...input, messages })).toBe("continue")
++          const requests = yield* llm.inputs
++          const history = JSON.stringify(requests[1].messages)
++          expect(history).toContain('"tool_call_id":"call_1"')
++          expect(history).toContain(
++            state === "completed"
++              ? "resource:one"
++              : state === "error"
++                ? "launch failed after a side effect"
++                : "Tool execution aborted",
++          )
++          expect(yield* llm.calls).toBe(2)
++          expect(executions).toEqual(["launch"])
++        }),
++      { config: (url) => providerCfg(url) },
++    ),
++  )
++}
++
+ it.live("session.processor effect tests mark pending tools as aborted on cleanup", () =>
+   provideTmpdirServer(
+     ({ dir, llm }) =>
