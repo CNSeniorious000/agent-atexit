@@ -43,7 +43,7 @@ describe("OpenCode adapter", () => {
     const system = { system: ["host instructions"] };
     await hooks["experimental.chat.system.transform"]!({ model: {} as never }, system);
     expect(system.system).toHaveLength(2);
-    expect(system.system[0]).toBe("host instructions"); expect(system.system[1]).toContain("atexit");
+    expect(system.system[0]).toBe("host instructions"); expect(system.system[1]).toContain("cleanup");
     const output = join(root, "executed.txt");
     const approvals: unknown[] = [];
     const context = {
