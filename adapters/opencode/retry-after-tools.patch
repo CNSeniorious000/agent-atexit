@@ -35,10 +35,10 @@ index 9f85309..b7f2519 100644
                SessionRetry.policy({
                  provider: input.model.providerID,
 diff --git a/packages/opencode/test/session/processor-effect.test.ts b/packages/opencode/test/session/processor-effect.test.ts
-index c67f82d..4aa08c5 100644
+index c67f82d..26dd8d6 100644
 --- a/packages/opencode/test/session/processor-effect.test.ts
 +++ b/packages/opencode/test/session/processor-effect.test.ts
-@@ -870,6 +870,119 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
+@@ -870,6 +870,120 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
    ),
  )
  
@@ -123,11 +123,12 @@ index c67f82d..4aa08c5 100644
 +          expect(handle.message.error).toBeUndefined()
 +
 +          // Use the same history conversion as the prompt loop, then inspect the next HTTP request.
-+          const parts = yield* MessageV2.parts(msg.id)
++          const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
++          expect(stored.info.role === "assistant" && stored.info.finish).toBe("tool-calls")
 +          const messages = yield* MessageV2.toModelMessagesEffect(
 +            [
 +              { info: parent, parts: yield* MessageV2.parts(parent.id) },
-+              { info: handle.message, parts },
++              stored,
 +            ],
 +            mdl,
 +          )
