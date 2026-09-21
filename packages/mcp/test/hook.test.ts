@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionStore } from "@agent-atexit/core";
-import { cleanupInstruction } from "../src/instructions";
+import { claudeCleanupInstruction } from "../src/instructions";
 
 const roots: string[] = [];
 
@@ -28,11 +28,11 @@ async function runHook(root: string, input: unknown, env: NodeJS.ProcessEnv = {}
 }
 
 describe("portable lifecycle hook", () => {
-  test("adds independent guidance to parallel Claude Bash results without binding output UUIDs", async () => {
+  test("adds batch guidance without binding UUIDs from tool results", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-guidance-")); roots.push(root);
     const store = new ActionStore(root), registration = await store.register({ argv: ["echo", "unrelated"] });
-    const outputs = await Promise.all([1, 2].map(() => runHook(root, { cwd: root, session_id: "claude-session", hook_event_name: "PostToolUse", tool_name: "Bash", tool_response: { stdout: registration.id } }, { PLUGIN_ROOT: undefined })));
-    for (const stdout of outputs) expect(JSON.parse(stdout)).toEqual({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: cleanupInstruction } });
+    const outputs = await Promise.all([1, 2].map(() => runHook(root, { cwd: root, session_id: "claude-session", hook_event_name: "PostToolBatch", tool_calls: [{ tool_name: "Bash", tool_input: { command: "echo ok" } }], tool_response: { stdout: registration.id } }, { PLUGIN_ROOT: undefined })));
+    for (const stdout of outputs) expect(JSON.parse(stdout)).toEqual({ hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: claudeCleanupInstruction } });
     expect(await store.get(registration.id)).toEqual(registration);
   });
 

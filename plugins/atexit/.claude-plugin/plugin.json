@@ -10,5 +10,6 @@
   "repository": "https://github.com/CNSeniorious000/agent-atexit",
   "license": "MIT",
   "keywords": ["atexit", "cleanup", "lifecycle"],
-  "mcpServers": "./.mcp.claude.json"
+  "mcpServers": "./.mcp.claude.json",
+  "hooks": "./.claude-post-batch.json"
 }

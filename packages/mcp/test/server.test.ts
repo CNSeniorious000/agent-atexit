@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { cleanupInstruction, codexCleanupInstruction, hermesCleanupInstruction } from "../src/instructions";
+import { cleanupInstruction, codexCleanupInstruction, hermesCleanupInstruction, claudeCleanupInstruction } from "../src/instructions";
 
 const roots: string[] = [];
 
@@ -17,9 +17,11 @@ describe("agent-atexit MCP server", () => {
   test("selects host guidance through shipped configs without changing shared tool contracts", async () => {
     const pluginRoot = resolve(import.meta.dirname, "../../../plugins/atexit");
     const snapshots = [];
-    for (const [host, instructions] of [["codex", codexCleanupInstruction], ["claude", cleanupInstruction], ["hermes", hermesCleanupInstruction]]) {
+    for (const [host, instructions] of [["default", cleanupInstruction], ["codex", codexCleanupInstruction], ["claude", claudeCleanupInstruction], ["hermes", hermesCleanupInstruction]]) {
       let config: { command: string; args: string[]; cwd?: string };
-      if (host === "hermes") {
+      if (host === "default") {
+        config = { command: "node", args: [join(pluginRoot, "dist/mcp.mjs")] };
+      } else if (host === "hermes") {
         const hermes = Bun.YAML.parse(await readFile(resolve(pluginRoot, "../../adapters/hermes/config.yaml"), "utf8")) as { mcp_servers: { atexit: typeof config } };
         config = hermes.mcp_servers.atexit;
       } else {
@@ -39,8 +41,8 @@ describe("agent-atexit MCP server", () => {
         await client.close();
       }
     }
-    const [codexTools, claudeTools, hermesTools] = snapshots;
-    expect(hermesTools).toEqual(claudeTools);
+    const [defaultTools, codexTools, claudeTools, hermesTools] = snapshots;
+    expect(hermesTools).toEqual(defaultTools);
     expect(codexTools!.map(({ description, ...contract }) => contract)).toEqual(claudeTools!.map(({ description, ...contract }) => contract));
     expect(codexTools!.filter((tool, i) => tool.description !== claudeTools![i]!.description).map(({ name }) => name).toSorted()).toEqual(["atexit_cancel", "atexit_register"]);
   });
