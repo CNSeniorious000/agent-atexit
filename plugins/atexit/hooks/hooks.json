@@ -22,16 +22,6 @@
             "timeout": 3
           }
         ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\"",
-            "timeout": 3
-          }
-        ]
       }
     ],
     "SessionEnd": [
