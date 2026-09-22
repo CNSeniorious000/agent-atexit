@@ -16,18 +16,6 @@ Source-based hints point out potentially hidden verification errors and piped st
 
 See the repository README for installation, security, and lifecycle limitations.
 
-## Optional host retry fix
+## Host retry behavior
 
-OpenCode 1.18.31 can retry the original model input after a stream failure even when tools have already run. The retry omits those results and can cause duplicate acquisition; adapter guidance cannot supply a result the host has not sent.
-
-[`retry-after-tools.patch`](./retry-after-tools.patch) targets `anomalyco/opencode` tag `v1.18.31` (`014614d35b397775e5d397a490fc72368c894ec2`). After a tool call, retryable stream failures return to the prompt loop, which rebuilds history with completed results, tool errors, or interrupted states. Failures before tool calls retain the existing retry policy; fatal errors, user interruption, and context overflow retain their existing handling. Apply it only to a matching source checkout, then build or run that checkout; installing this adapter does not patch OpenCode.
-
-```sh
-git apply --check /absolute/path/to/retry-after-tools.patch
-git apply /absolute/path/to/retry-after-tools.patch
-cd packages/opencode
-bun test --timeout 30000 test/session/processor-effect.test.ts test/session/retry.test.ts test/session/message-v2.test.ts
-bun typecheck
-```
-
-With Bun 1.4.0, five HTTP regression cases cover completed, failed, and running tools, fatal errors, and context overflow. In one native CLI fault-injection comparison, the original source executed the acquisition twice after losing the stream; the patch executed it once and included the first result in the next request. This prevents blind replay of stale input, not arbitrary tool reexecution. Post-tool recovery advances the prompt loop without a global retry cap; repeated failures after new tool calls can keep producing further turns and tool executions. The existing 250 ms cleanup grace can still leave interrupted tools with an unknown outcome; it does not prove that their side effects were undone.
+OpenCode 1.18.31 can retry the original model input after a stream failure even when tools have already run. The retry omits those results and can cause duplicate acquisition; adapter guidance cannot supply a result the host has not sent. The host's cleanup grace can also leave interrupted tools with an unknown outcome; do not assume their side effects were undone. The adapter does not change this host behavior. Experiments with local host fixes are separate from validation on an unmodified OpenCode installation.
