@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ActionStore, executeRun, resolveStateRoot, type RunRecord, type SessionBinding } from "@agent-atexit/core";
+import { claudeCleanupInstruction } from "./instructions";
+import { verificationFeedback } from "./verification";
 
 interface HookInput {
   client_type?: string;
@@ -9,10 +11,13 @@ interface HookInput {
   session_id?: string;
   tool_name?: string;
   tool_response?: unknown;
+  tool_calls?: { tool_name?: string; tool_input?: { command?: unknown; content?: unknown; new_string?: unknown; newString?: unknown } }[];
   tool_output?: unknown;
+  extra?: { result?: unknown };
 }
 
 function detectHost(input: HookInput): string {
+  if (input.hook_event_name === "post_tool_call" || input.hook_event_name === "on_session_finalize") return "hermes";
   if (input.client_type === "kimi_code_cli") return "kimi-code";
   if (process.env.PLUGIN_ROOT) return "codex";
   return "claude-code";
@@ -56,18 +61,32 @@ async function main(): Promise<void> {
   const input = JSON.parse((await readStdin()) || "{}") as HookInput;
   if (!input.session_id || !input.cwd || !input.hook_event_name) return;
   const host = detectHost(input);
+  if (input.hook_event_name === "PostToolBatch") {
+    // Inspect arguments, not tool output: untrusted result text must not control this reminder or enter registration binding.
+    if (host === "claude-code" && input.tool_calls?.some((call) => call.tool_name && !["TodoWrite", "TodoRead"].includes(call.tool_name))) {
+      const feedback = verificationFeedback(input.tool_calls), hint = feedback ? "\n\n" + feedback : "";
+      console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: claudeCleanupInstruction + hint } }));
+    }
+    return;
+  }
+  if ((input.hook_event_name === "PostToolUse" || input.hook_event_name === "post_tool_call") && input.tool_name === "Bash") return;
   // Codex's legacy bundled-MCP format resolves cwd but does not expose PLUGIN_DATA to the server. Ignore the hook-only compatibility variables so both sides use the XDG state fallback.
   const root = host === "codex" ? resolveStateRoot({ ...process.env, CLAUDE_PLUGIN_DATA: undefined, PLUGIN_DATA: undefined }) : resolveStateRoot();
   const store = new ActionStore(root);
   const binding: SessionBinding = { cwd: input.cwd, host, sessionId: input.session_id };
-  if (input.hook_event_name === "PostToolUse") {
-    for (const id of findRegistrationIds(input.tool_response ?? input.tool_output)) {
+  if (input.hook_event_name === "SessionStart") {
+    await store.openSession(binding);
+    return;
+  }
+  if (input.hook_event_name === "PostToolUse" || input.hook_event_name === "post_tool_call") {
+    for (const id of findRegistrationIds(input.tool_response ?? input.tool_output ?? input.extra?.result)) {
       const result = await store.bind(id, binding).catch(() => undefined);
       if (result?.lateRun) await startRun(root, result.lateRun);
     }
     return;
   }
-  if (input.hook_event_name === "SessionEnd") {
+  // Hermes on_session_end is a turn boundary; only on_session_finalize ends resource ownership.
+  if (input.hook_event_name === "SessionEnd" || input.hook_event_name === "on_session_finalize") {
     const run = await store.closeAndClaim(binding);
     if (run) await startRun(root, run);
   }

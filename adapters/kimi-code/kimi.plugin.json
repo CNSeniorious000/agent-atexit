@@ -9,7 +9,7 @@
   "homepage": "https://github.com/CNSeniorious000/agent-atexit",
   "license": "MIT",
   "keywords": ["atexit", "cleanup", "lifecycle"],
-  "systemPrompt": "Before starting any CLI-managed session or long-lived process that could outlive this agent session, register its exact cleanup argv with atexit_register; if creation assigns the target, register immediately afterward. Keep it registered while the resource is available for follow-up, and cancel only after normal cleanup. For an ego-browser task space, use argv [\"ego-browser\", \"nodejs\", \"-e\", \"await completeTaskSpace(<id>, { keep: false })\"].",
+  "systemPrompt": "Register scoped fallback cleanup for temporary processes and CLI sessions kept live across tool calls. Cover all newly acquired resources as soon as their real cleanup targets are known. Avoid spending a model turn only on registry bookkeeping when independent task work is ready: use parallel calls or one orchestration invocation. Registration can accompany resource use or inspection. After cleanup succeeds, cancel its fallback alongside work on other resources, including their cleanup. Sequence dependencies within an invocation when possible. Never race cancellation with its own cleanup, delay registration, or invent work to fill a batch.",
   "mcpServers": {
     "atexit": {
       "command": "node",

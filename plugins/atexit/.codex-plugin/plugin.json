@@ -20,5 +20,5 @@
     "capabilities": ["Write"],
     "defaultPrompt": ["Register this cleanup command with atexit."]
   },
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.mcp.codex.json"
 }

@@ -8,7 +8,7 @@ const kimi = unzipSync(new Uint8Array(await readFile(resolve(artifacts, "agent-a
 for (const path of ["kimi.plugin.json", "dist/mcp.mjs", "dist/hook.mjs", "dist/worker.mjs"]) if (!kimi[path]) throw new Error(`Kimi ZIP is missing ${path}`);
 
 const tarballs = [
-  { file: "agent-atexit-opencode-0.1.0.tgz", members: ["package/LICENSE", "package/README.md", "package/dist/server.js", "package/dist/worker.js", "package/package.json"], name: "@agent-atexit/opencode" },
+  { file: "agent-atexit-opencode-0.1.0.tgz", members: ["package/LICENSE", "package/README.md", "package/dist/server.js", "package/dist/skills/defer-cleanup/SKILL.md", "package/dist/worker.js", "package/package.json"], name: "@agent-atexit/opencode" },
   { file: "agent-atexit-dsh-0.1.0.tgz", members: ["package/LICENSE", "package/README.md", "package/cordis.patch.yml", "package/dist/index.js", "package/dist/worker.js", "package/package.json"], name: "@agent-atexit/dsh" },
 ] as const;
 
@@ -26,4 +26,5 @@ for (const tarball of tarballs) {
   if (JSON.stringify(members) !== JSON.stringify([...tarball.members].toSorted())) throw new Error(`${tarball.file} has unexpected members: ${members.join(", ")}`);
   const manifest = JSON.parse(await tarOutput(["-xOzf", path, "package/package.json"])) as { name?: string; publishConfig?: { access?: string }; version?: string };
   if (manifest.name !== tarball.name || manifest.version !== "0.1.0" || manifest.publishConfig?.access !== "public") throw new Error(`${tarball.file} has invalid package metadata`);
+  if (tarball.name === "@agent-atexit/opencode" && await tarOutput(["-xOzf", path, "package/dist/skills/defer-cleanup/SKILL.md"]) !== await readFile(resolve(root, "plugins/atexit/skills/defer-cleanup/SKILL.md"), "utf8")) throw new Error(`${tarball.file} has stale cleanup guidance`);
 }

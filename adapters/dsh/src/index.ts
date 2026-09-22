@@ -73,7 +73,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.on("tools/pre-execute", (exec, next) => config.ask && exec.name === "atexit_register" ? Promise.resolve({ kind: "ask", reason: "Authorize this exact argv command to execute later when the current agent session exits." }) : next(), { global: true });
   ctx.tools.register(defineTool({
     name: "atexit_register",
-    description: "Before starting any CLI-managed session or long-lived process that could outlive this agent session—such as a browser session, daemon, or dev server—register its exact cleanup argv. Registration is deferred, so keep it while the resource remains available for follow-up. If creation assigns the cleanup target, register immediately afterward. Cancel only after normal cleanup. argv executes directly, without a shell.",
+    description: "Register scoped cleanup argv for a temporary process or CLI session kept live across calls. Cover all newly acquired resources in the first response after their real cleanup targets are known, alongside use, inspection, or other independent task work. Use parallel calls or one orchestration invocation to avoid a separate bookkeeping turn. Register before creation only if cleanup tolerates the known target's absence. argv executes directly, without a shell.",
     parameters: {
       argv: { type: "array", required: true, items: { type: "string" }, description: "Executable followed by literal arguments." },
       cwd: { type: "string", description: "Absolute working directory. Defaults to the session cwd." },
@@ -96,7 +96,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   }));
   ctx.tools.register(defineTool({
     name: "atexit_cancel",
-    description: "Cancel a pending atexit registration by its unguessable registration ID.",
+    description: "Remove a fallback without executing it. Confirm resource release before cancelling; a stop acknowledgment alone is insufficient. Never parallelize cancellation with its cleanup or the check establishing release. Then combine cancellation with independent remaining work, including cleanup of other resources. A separate call is appropriate when none remains. Creation confirmed to have left no resource also permits cancellation. Claimed or running commands cannot be cancelled.",
     parameters: { registration_id: { type: "string", required: true } },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { cancelled: { type: "boolean", required: true }, registration_id: { type: "string", required: true }, state: { type: "string", required: true } } },
