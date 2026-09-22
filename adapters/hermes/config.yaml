@@ -1,4 +1,6 @@
-# Launch with `hermes chat`; add `-s defer-cleanup` for explicit preload. See README.md for the MCP alwaysLoad compatibility patch.
+# Hermes 0.21.4+: load the installed skill through the native configuration on each new session.
+skills:
+  auto_load: [defer-cleanup]
 plugins:
   # Hermes otherwise drops overlapping invocations of the same callback. Shell hooks retain their own timeout.
   hook_callback_timeout: 0

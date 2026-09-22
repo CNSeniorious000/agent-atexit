@@ -147,7 +147,7 @@
 +    agent=NS(valid_tool_names=set(),enabled_toolsets=[],disabled_toolsets=[],log_prefix="",_invalid_tool_retries=0,_invalid_json_retries=0)
 +    agent._repair_tool_call=lambda name:module.repair_tool_call(agent,name)
 +    agent._uniquify_tool_call_ids=lambda calls:None
-+    agent._buffer_vprint=lambda *a,**kw:None
++    agent._vprint=agent._buffer_vprint=lambda *a,**kw:None
 +    agent._build_assistant_message=lambda msg,reason:{"role":"assistant","content":None,"tool_calls":[{"id":t.id,"type":"function","function":{"name":t.function.name,"arguments":t.function.arguments}} for t in msg.tool_calls]}
 +    def register(server="demo",action="operation",*,exposed=True,enabled=True,always=True,check=None,scope=None,handler=None):
 +        name=mcp_prefixed_tool_name(server,action); toolset="mcp-"+server
