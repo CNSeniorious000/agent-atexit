@@ -18,7 +18,7 @@
     },
     "adapters/dsh": {
       "name": "@agent-atexit/dsh",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "peerDependencies": {
         "@deepseek-ai/cordis": "^4.0.1",
         "@deepseek-ai/dsh-agent": ">=0.1.1-rc.2 <0.2.0",
@@ -28,19 +28,19 @@
     },
     "adapters/kimi-code": {
       "name": "@agent-atexit/kimi-code",
-      "version": "0.1.0",
+      "version": "0.2.0",
     },
     "adapters/opencode": {
       "name": "@agent-atexit/opencode",
-      "version": "0.1.0",
+      "version": "0.2.0",
     },
     "packages/core": {
       "name": "@agent-atexit/core",
-      "version": "0.1.0",
+      "version": "0.2.0",
     },
     "packages/mcp": {
       "name": "@agent-atexit/mcp",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@agent-atexit/core": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.25.3",

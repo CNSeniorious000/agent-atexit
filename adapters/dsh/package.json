@@ -1,6 +1,6 @@
 {
   "name": "@agent-atexit/dsh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run registered commands when a DeepSeek Harness agent exits.",
   "type": "module",
   "exports": {

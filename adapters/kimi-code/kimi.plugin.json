@@ -1,6 +1,6 @@
 {
   "name": "atexit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run registered commands when a Kimi Code session exits.",
   "author": {
     "name": "CNSeniorious000",

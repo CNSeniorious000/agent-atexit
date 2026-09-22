@@ -26,13 +26,13 @@ jobs:
       - run: git diff --exit-code -- plugins/atexit/dist
       - run: bun run artifacts
       - name: Create checksums
-        run: cd artifacts && sha256sum agent-atexit-kimi.zip agent-atexit-opencode-0.1.0.tgz agent-atexit-dsh-0.1.0.tgz > SHA256SUMS
+        run: cd artifacts && sha256sum agent-atexit-kimi.zip agent-atexit-opencode-0.2.0.tgz agent-atexit-dsh-0.2.0.tgz > SHA256SUMS
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          prerelease: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: |
             artifacts/agent-atexit-kimi.zip
-            artifacts/agent-atexit-opencode-0.1.0.tgz
-            artifacts/agent-atexit-dsh-0.1.0.tgz
+            artifacts/agent-atexit-opencode-0.2.0.tgz
+            artifacts/agent-atexit-dsh-0.2.0.tgz
             artifacts/SHA256SUMS

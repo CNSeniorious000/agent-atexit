@@ -5,8 +5,8 @@
       "id": "atexit",
       "displayName": "atexit",
       "description": "Register commands to run when the current Kimi Code session exits.",
-      "version": "0.1.0",
-      "source": "https://github.com/CNSeniorious000/agent-atexit/releases/download/v0.1.0/agent-atexit-kimi.zip"
+      "version": "0.2.0",
+      "source": "https://github.com/CNSeniorious000/agent-atexit/releases/download/v0.2.0/agent-atexit-kimi.zip"
     }
   ]
 }

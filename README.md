@@ -3,7 +3,7 @@
 `agent-atexit` gives coding agents a small, explicit cleanup registry. An agent can register literal `argv` commands during a session, inspect or cancel them by capability ID, and have pending commands launched when the host's supported exit lifecycle fires.
 
 > [!WARNING]
-> This project is pre-release. Registering a command authorizes delayed execution with your user account's permissions. The adapters do not add an approval prompt by default; host permission policy still applies.
+> Registering a command authorizes delayed execution with your user account's permissions. The adapters do not add an approval prompt by default; host permission policy still applies.
 
 ## Tools
 
@@ -22,7 +22,7 @@ The core persists registrations before returning success, binds them to the host
 | Kimi Code | bundled MCP server | `SessionEnd` | `exit` and `archive`; `SIGHUP` emergency exit can bypass cleanup |
 | OpenCode | native plugin tools | plugin `dispose` and `session.deleted` | Instance unload and permanent session deletion, not a logical session-close event |
 | dsh | native `ctx.tools` tools | workspace archive or per-agent `ctx.effect` disposer | Web archive and Agent teardown; whole-process teardown has a five-second grace |
-| Hermes | bundled MCP server and shell hooks | `on_session_finalize` | Chat session shutdown/reset; top-level `-z` does not emit this hook in 0.21.3 |
+| Hermes (experimental) | bundled MCP server and shell hooks | `on_session_finalize` | Chat session shutdown/reset; top-level `-z` does not emit this hook in 0.21.3 |
 
 Every adapter hands claimed work to a detached worker immediately because host shutdown budgets are not long-command runtimes. `SIGKILL`, power loss, host bugs, and forceful process-tree termination can still prevent execution.
 
@@ -65,7 +65,7 @@ Review and trust the bundled hooks with `/hooks`; Codex intentionally does not t
 Inside Kimi Code, install the release ZIP and reload:
 
 ```text
-/plugins install https://github.com/CNSeniorious000/agent-atexit/releases/download/v0.1.0/agent-atexit-kimi.zip
+/plugins install https://github.com/CNSeniorious000/agent-atexit/releases/download/v0.2.0/agent-atexit-kimi.zip
 /reload
 ```
 
@@ -79,7 +79,7 @@ The npm package is built but will not be published before explicit registry auth
 opencode plugin ./adapters/opencode -g
 ```
 
-After registry publication, the stable form will be `opencode plugin @agent-atexit/opencode@0.1.0 -g`. Registration is immediate by default; set `AGENT_ATEXIT_ASK=1` to ask through OpenCode's permission system before each registration.
+After registry publication, the stable form will be `opencode plugin @agent-atexit/opencode@0.2.0 -g`. Registration is immediate by default; set `AGENT_ATEXIT_ASK=1` to ask through OpenCode's permission system before each registration.
 
 ### dsh
 
@@ -87,7 +87,7 @@ Build the tarball, then install it separately into every desired profile:
 
 ```bash
 bun run pack:npm
-dsh plugin --profile web add ./artifacts/agent-atexit-dsh-0.1.0.tgz
+dsh plugin --profile web add ./artifacts/agent-atexit-dsh-0.2.0.tgz
 ```
 
 After registry publication, the stable form will be `dsh plugin --profile web add @agent-atexit/dsh`. Restart the profile after add, update, or remove.

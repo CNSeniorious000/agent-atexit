@@ -8,7 +8,7 @@ const codex = process.argv.includes("--codex"), hermes = process.argv.includes("
 const claude = !codex && !hermes && process.argv.includes("--claude");
 const stateRoot = resolveStateRoot();
 const store = new ActionStore(stateRoot);
-const server = new McpServer({ name: "agent-atexit", version: "0.1.0" }, { instructions: codex ? codexCleanupInstruction : hermes ? hermesCleanupInstruction : claude ? claudeCleanupInstruction : cleanupInstruction });
+const server = new McpServer({ name: "agent-atexit", version: "0.2.0" }, { instructions: codex ? codexCleanupInstruction : hermes ? hermesCleanupInstruction : claude ? claudeCleanupInstruction : cleanupInstruction });
 const registrationId = z.string().uuid().describe("Registration ID returned by atexit_register.");
 
 server.registerTool("atexit_register", {

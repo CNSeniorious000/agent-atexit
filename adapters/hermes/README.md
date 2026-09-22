@@ -1,5 +1,7 @@
 # Hermes
 
+This adapter is experimental; see [Guidance delivery and limits](#guidance-delivery-and-limits).
+
 Merge `config.yaml` into your Hermes configuration, replacing `/absolute/path/to/agent-atexit` with this checkout. Build the portable plugin first with `bun run build`, and copy `plugins/atexit/skills/defer-cleanup` into `$HERMES_HOME/skills/`. Export `HERMES_HOME` (normally `~/.hermes`), or replace its references in the config with an absolute path. Hermes filters inherited MCP environment variables, so configure the same state directory explicitly for both MCP and hooks.
 
 Use Hermes 0.21.4 or newer. The template sets `skills.auto_load: [defer-cleanup]`, so `hermes chat` loads the installed skill into each new session without an extra CLI flag or a system-prompt patch. Merge this entry with any existing auto-loaded skills. Missing or disabled skills are skipped, and `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses auto-loading. Changes take effect in a new session. Older releases can explicitly preload the skill with `hermes chat -s defer-cleanup`.

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const readJson = async (path: string) => JSON.parse(await readFile(resolve(root, path), "utf8")) as Record<string, unknown>;
-const expectedVersion = "0.1.0";
+const expectedVersion = "0.2.0";
 const manifests = [
   "plugins/atexit/.claude-plugin/plugin.json",
   "plugins/atexit/.codex-plugin/plugin.json",
