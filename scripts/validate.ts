@@ -25,9 +25,9 @@ for (const [path, workspace] of Object.entries(lock.workspaces)) {
   if ((await readJson(`${path}/package.json`)).version !== expectedVersion || workspace.version !== expectedVersion) throw new Error(`${path} manifest and lockfile must use version ${expectedVersion}`);
 }
 const marketplace = await readJson(".claude-plugin/marketplace.json") as { metadata: { version: string }; plugins: { version: string }[] };
-if ([marketplace.metadata.version, ...marketplace.plugins.map((plugin) => plugin.version)].some((version) => version !== expectedVersion)) throw new Error("Claude marketplace must use the release version");
+if (!marketplace.plugins.length || [marketplace.metadata.version, ...marketplace.plugins.map((plugin) => plugin.version)].some((version) => version !== expectedVersion)) throw new Error("Claude marketplace must list plugins using the release version");
 const kimiMarketplace = await readJson("kimi-marketplace.json") as { plugins: { version: string; source: string }[] };
-if (kimiMarketplace.plugins.some((plugin) => plugin.version !== expectedVersion || !plugin.source.endsWith(`/v${expectedVersion}/agent-atexit-kimi.zip`))) throw new Error("Kimi marketplace must reference the release version and artifact");
+if (!kimiMarketplace.plugins.length || kimiMarketplace.plugins.some((plugin) => plugin.version !== expectedVersion || plugin.source !== `https://github.com/CNSeniorious000/agent-atexit/releases/download/v${expectedVersion}/agent-atexit-kimi.zip`)) throw new Error("Kimi marketplace must list plugins referencing the release version and artifact");
 for (const path of ["packages/mcp/src/server.ts", "plugins/atexit/dist/mcp.mjs"]) {
   const server = await readFile(resolve(root, path), "utf8");
   const version = server.match(/name:\s*"agent-atexit",\s*version:\s*"([^"]+)"/)?.[1];
