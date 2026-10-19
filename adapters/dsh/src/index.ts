@@ -33,6 +33,12 @@ export function apply(ctx: Context, config: Config = {}): void {
   const store = new ActionStore(root);
   const agents = new WeakMap<Agent, SessionBinding>();
   const sessions = new Map<string, SessionBinding>();
+  let currentDirectory: ((agent: Agent) => string) | undefined;
+  ctx.inject(["workingDirectory"], (scoped) => {
+    const read = (agent: Agent) => (scoped as unknown as { workingDirectory: { get(session: Agent["session"]): string } }).workingDirectory.get(agent.session);
+    currentDirectory = read;
+    return () => { if (currentDirectory === read) currentDirectory = undefined; };
+  });
 
   const startRun = (run: RunRecord): void => {
     const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
@@ -88,7 +94,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (!exec.agent) throw new Error("atexit_register requires an owning agent session");
       const input = args as { argv: string[]; cwd?: string; key?: string; timeout_ms?: number };
       const binding = bindingFor(exec.agent);
-      const registration = await store.register({ argv: input.argv as [string, ...string[]], cwd: input.cwd ?? binding.cwd, ...(input.key === undefined ? {} : { key: input.key }), ...(input.timeout_ms === undefined ? {} : { timeoutMs: input.timeout_ms }) });
+      // Ownership stays tied to the original session; each new command captures the effective directory at registration time.
+      const registration = await store.register({ argv: input.argv as [string, ...string[]], cwd: input.cwd ?? currentDirectory?.(exec.agent) ?? binding.cwd, ...(input.key === undefined ? {} : { key: input.key }), ...(input.timeout_ms === undefined ? {} : { timeoutMs: input.timeout_ms }) });
       const result = await store.bind(registration.id, binding);
       if (result.lateRun) startRun(result.lateRun);
       return { registration_id: registration.id, state: result.registration.state };
