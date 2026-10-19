@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const readJson = async (path: string) => JSON.parse(await readFile(resolve(root, path), "utf8")) as Record<string, unknown>;
 const expectedVersion = (await readJson("package.json")).version;
+if (typeof expectedVersion !== "string" || !expectedVersion) throw new Error("root package must declare a release version");
 const manifests = [
   "plugins/atexit/.claude-plugin/plugin.json",
   "plugins/atexit/.codex-plugin/plugin.json",
@@ -16,6 +17,21 @@ for (const path of manifests) {
   const manifest = await readJson(path);
   if (manifest.version !== expectedVersion) throw new Error(`${path} must use version ${expectedVersion}`);
   if (manifest.name !== "atexit" && manifest.name !== "@agent-atexit/opencode" && manifest.name !== "@agent-atexit/dsh") throw new Error(`${path} has an unexpected name`);
+}
+// Frozen installs permit workspace-version drift, so validate release metadata explicitly.
+const lock = Bun.JSON5.parse(await readFile(resolve(root, "bun.lock"), "utf8")) as { workspaces: Record<string, { version?: string }> };
+for (const [path, workspace] of Object.entries(lock.workspaces)) {
+  if (!path) continue;
+  if ((await readJson(`${path}/package.json`)).version !== expectedVersion || workspace.version !== expectedVersion) throw new Error(`${path} manifest and lockfile must use version ${expectedVersion}`);
+}
+const marketplace = await readJson(".claude-plugin/marketplace.json") as { metadata: { version: string }; plugins: { version: string }[] };
+if (!marketplace.plugins.length || [marketplace.metadata.version, ...marketplace.plugins.map((plugin) => plugin.version)].some((version) => version !== expectedVersion)) throw new Error("Claude marketplace must list plugins using the release version");
+const kimiMarketplace = await readJson("kimi-marketplace.json") as { plugins: { version: string; source: string }[] };
+if (!kimiMarketplace.plugins.length || kimiMarketplace.plugins.some((plugin) => plugin.version !== expectedVersion || plugin.source !== `https://github.com/CNSeniorious000/agent-atexit/releases/download/v${expectedVersion}/agent-atexit-kimi.zip`)) throw new Error("Kimi marketplace must list plugins referencing the release version and artifact");
+for (const path of ["packages/mcp/src/server.ts", "plugins/atexit/dist/mcp.mjs"]) {
+  const server = await readFile(resolve(root, path), "utf8");
+  const version = server.match(/name:\s*"agent-atexit",\s*version:\s*"([^"]+)"/)?.[1];
+  if (version !== expectedVersion) throw new Error(`${path} MCP server must use version ${expectedVersion}`);
 }
 const codexMcp = await readJson("plugins/atexit/.mcp.codex.json");
 const claudeMcp = await readJson("plugins/atexit/.mcp.claude.json");
