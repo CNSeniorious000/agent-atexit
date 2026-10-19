@@ -65,7 +65,7 @@ Review and trust the bundled hooks with `/hooks`; Codex intentionally does not t
 Inside Kimi Code, install the release ZIP and reload:
 
 ```text
-/plugins install https://github.com/CNSeniorious000/agent-atexit/releases/download/v0.2.0/agent-atexit-kimi.zip
+/plugins install https://github.com/CNSeniorious000/agent-atexit/releases/download/v0.2.1/agent-atexit-kimi.zip
 /reload
 ```
 
@@ -79,7 +79,7 @@ The npm package is built but will not be published before explicit registry auth
 opencode plugin ./adapters/opencode -g
 ```
 
-After registry publication, the stable form will be `opencode plugin @agent-atexit/opencode@0.2.0 -g`. Registration is immediate by default; set `AGENT_ATEXIT_ASK=1` to ask through OpenCode's permission system before each registration.
+After registry publication, the stable form will be `opencode plugin @agent-atexit/opencode@0.2.1 -g`. Registration is immediate by default; set `AGENT_ATEXIT_ASK=1` to ask through OpenCode's permission system before each registration.
 
 ### dsh
 
@@ -87,7 +87,7 @@ Build the tarball, then install it separately into every desired profile:
 
 ```bash
 bun run pack:npm
-dsh plugin --profile web add ./artifacts/agent-atexit-dsh-0.2.0.tgz
+dsh plugin --profile web add ./artifacts/agent-atexit-dsh-0.2.1.tgz
 ```
 
 After registry publication, the stable form will be `dsh plugin --profile web add @agent-atexit/dsh`. Restart the profile after add, update, or remove.
