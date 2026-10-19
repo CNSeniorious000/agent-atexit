@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { ActionStore } from "../../../packages/core/src/index.ts";
+import { ActionStore, sessionKey } from "../../../packages/core/src/index.ts";
 
 const roots: string[] = [];
 
@@ -52,8 +52,7 @@ describe("dsh adapter", () => {
     const records = ids.map((id) => listed.find((record) => record.id === id)!);
     expect(records.map((record) => record.cwd)).toEqual([join(root, "first"), join(root, "second"), join(root, "explicit"), root]);
     expect(reads).toBe(2);
-    expect(records[0]!.sessionKey).toBeTruthy();
-    expect(records.every((record) => record.sessionKey === records[0]!.sessionKey && record.host === "dsh")).toBe(true);
+    expect(records.every((record) => record.sessionKey === sessionKey("dsh", "directory-session") && record.host === "dsh")).toBe(true);
     for (const registration_id of ids) await tools.get("atexit_cancel").execute({ registration_id });
   });
 

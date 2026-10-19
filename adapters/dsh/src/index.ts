@@ -82,7 +82,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     description: "Register scoped cleanup argv for a temporary process or CLI session kept live across calls. Cover all newly acquired resources in the first response after their real cleanup targets are known, alongside use, inspection, or other independent task work. Use parallel calls or one orchestration invocation to avoid a separate bookkeeping turn. Register before creation only if cleanup tolerates the known target's absence. argv executes directly, without a shell.",
     parameters: {
       argv: { type: "array", required: true, items: { type: "string" }, description: "Executable followed by literal arguments." },
-      cwd: { type: "string", description: "Absolute working directory. Defaults to the session cwd." },
+      cwd: { type: "string", description: "Absolute working directory. Defaults to the effective working directory when available, otherwise the session cwd." },
       key: { type: "string", description: "Optional replacement key." },
       timeout_ms: { type: "integer", description: "Command timeout in milliseconds. Defaults to 30000." },
     },
