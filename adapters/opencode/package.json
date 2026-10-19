@@ -1,12 +1,13 @@
 {
   "name": "@agent-atexit/opencode",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "description": "Run registered commands when an OpenCode instance exits.",
   "type": "module",
   "exports": {
     "./server": "./dist/server.js"
   },
   "files": ["dist"],
+  "publishConfig": { "access": "public" },
   "engines": {
     "node": ">=18",
     "opencode": ">=1.18.27"

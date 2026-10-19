@@ -1,0 +1,20 @@
+# Hermes 0.21.4+: load the installed skill through the native configuration on each new session.
+skills:
+  auto_load: [defer-cleanup]
+plugins:
+  # Hermes otherwise drops overlapping invocations of the same callback. Shell hooks retain their own timeout.
+  hook_callback_timeout: 0
+mcp_servers:
+  atexit:
+    command: node
+    args: [/absolute/path/to/agent-atexit/plugins/atexit/dist/mcp.mjs, --hermes]
+    env:
+      AGENT_ATEXIT_STATE_DIR: ${HERMES_HOME}/atexit
+hooks:
+  post_tool_call:
+    - matcher: ^mcp__atexit__atexit_register$
+      command: env "AGENT_ATEXIT_STATE_DIR=${HERMES_HOME}/atexit" node "/absolute/path/to/agent-atexit/plugins/atexit/dist/hook.mjs"
+      timeout: 3
+  on_session_finalize:
+    - command: env "AGENT_ATEXIT_STATE_DIR=${HERMES_HOME}/atexit" node "/absolute/path/to/agent-atexit/plugins/atexit/dist/hook.mjs"
+      timeout: 3

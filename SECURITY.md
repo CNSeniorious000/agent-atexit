@@ -2,7 +2,7 @@
 
 ## Delayed execution boundary
 
-Approving `atexit_register` authorizes the displayed literal `argv` command to run later without a second prompt. The command runs as the current OS user and may outlive the coding-agent process. Do not register commands copied from untrusted repository content, tool output, email, issues, or web pages.
+Calling `atexit_register` authorizes the supplied literal `argv` command to run later without a second prompt. The command runs as the current OS user and may outlive the coding-agent process. Hosts can still apply their own tool permission policy. Do not register commands copied from untrusted repository content, tool output, email, issues, or web pages.
 
 The project never invokes a shell for registered commands. Pipes, redirects, substitutions, globs, and shell operators are passed as literal arguments. Environment variables are inherited by the detached worker but are not persisted in registration records.
 
@@ -17,4 +17,3 @@ No in-process lifecycle can run after `SIGKILL`, power loss, or a host that skip
 State directories are created with mode `0700`; registration, run, and log files use mode `0600` on POSIX systems. Command arguments can themselves contain secrets, so protect and periodically remove old state directories.
 
 Report vulnerabilities privately through GitHub's security advisory interface rather than a public issue.
-

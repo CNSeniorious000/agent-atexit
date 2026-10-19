@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "atexit": {
+      "command": "node",
+      "args": ["./dist/mcp.mjs", "--codex"],
+      "cwd": "."
+    }
+  }
+}

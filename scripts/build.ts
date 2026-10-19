@@ -26,6 +26,7 @@ for (const [entry, name] of [["adapters/opencode/src/server.ts", "server.js"], [
   const result = await Bun.build({ entrypoints: [resolve(root, entry)], external: [], format: "esm", minify: true, naming: name, outdir: opencodeDist, packages: "bundle", target: "node" });
   if (!result.success) throw new AggregateError(result.logs, `failed to build ${entry}`);
 }
+await cp(resolve(root, "plugins/atexit/skills"), resolve(opencodeDist, "skills"), { recursive: true });
 for (const [entry, name, external] of [["adapters/dsh/src/index.ts", "index.js", ["@deepseek-ai/cordis", "@deepseek-ai/dsh-agent", "@deepseek-ai/dsh-tools", "@deepseek-ai/schemastery"]], ["adapters/dsh/src/worker.ts", "worker.js", []]] as const) {
   const result = await Bun.build({ entrypoints: [resolve(root, entry)], external: [...external], format: "esm", minify: true, naming: name, outdir: dshDist, packages: "bundle", target: "node" });
   if (!result.success) throw new AggregateError(result.logs, `failed to build ${entry}`);
