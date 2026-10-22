@@ -1,3 +1,4 @@
+export { cancelGuidance, registerGuidance, resourceExamples } from "./guidance.ts";
 export { resolveStateRoot, sessionKey } from "./paths.ts";
 export { executeRun } from "./runner.ts";
 export { ActionStore } from "./store.ts";

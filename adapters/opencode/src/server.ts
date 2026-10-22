@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { ActionStore, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
+import { ActionStore, resolveStateRoot, resourceExamples, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
 import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 
 type ToolCall = { tool_name?: string; tool_input?: { command?: unknown; content?: unknown; new_string?: unknown; newString?: unknown; patchText?: unknown } };
@@ -53,7 +53,7 @@ function verificationFeedback(calls: readonly ToolCall[]): string {
 const root = resolveStateRoot();
 const store = new ActionStore(root);
 const sessions = new Map<string, SessionBinding>();
-const cleanupInstruction = "Batch eligible bookkeeping with ready independent task tools, including cleanup. Planning and filler do not count. Respect task ordering and data dependencies.\n\nRegister returned PIDs or session handles in the next tool batch; readiness checks and planning cannot postpone it. Cancel only after an earlier result proves that exact target released; for a PID, require process exit. Sibling calls cannot supply prerequisites; use checked awaits inside orchestration or later responses. Standalone bookkeeping is valid only when no real work, including cleanup, remains. Do not infer absence from checks that hide their errors. Account for partial acquisition before retrying.";
+const opencodeGuidance = "Batch eligible bookkeeping with ready independent task tools, including cleanup. Planning and filler do not count. Respect task ordering and data dependencies.\n\nRegister returned PIDs or session handles in the next tool batch; readiness checks and planning cannot postpone it. Cancel only after an earlier result proves that exact target released; for a PID, require process exit. Sibling calls cannot supply prerequisites; use checked awaits inside orchestration or later responses. Standalone bookkeeping is valid only when no real work, including cleanup, remains. Do not infer absence from checks that hide their errors. Account for partial acquisition before retrying.";
 
 function startRun(run: RunRecord): void {
   const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
@@ -80,12 +80,12 @@ const plugin: PluginModule = {
       const skills = (config as typeof config & { skills?: { paths?: string[] } }).skills ??= {};
       skills.paths = [...new Set([...(skills.paths ?? []), fileURLToPath(new URL("./skills/", import.meta.url))])];
     },
-    "experimental.chat.system.transform": async (_input, output) => { output.system.push(cleanupInstruction); },
+    "experimental.chat.system.transform": async (_input, output) => { output.system.push(opencodeGuidance); },
     "experimental.chat.messages.transform": async (_input, output) => {
       const reminderFor = (message: (typeof output.messages)[number]) => {
         const calls = message.parts.flatMap((part) => part.type === "tool" && (part.state.status === "completed" || part.state.status === "error") ? [{ tool_name: part.tool, tool_input: part.state.input }] : []);
         const feedback = verificationFeedback(calls), hint = feedback ? "\n\n" + feedback : "";
-        return `\n\n<system-reminder>\n${cleanupInstruction}${hint}\n</system-reminder>`;
+        return `\n\n<system-reminder>\n${opencodeGuidance}${hint}\n</system-reminder>`;
       };
       // Preserve native execution intervals in every request; completion order is otherwise absent from tool text.
       // The host retains this array; replace copied entries rather than the array itself.
@@ -138,7 +138,7 @@ const plugin: PluginModule = {
     },
     tool: {
       atexit_register: tool({
-        description: "Register runnable cleanup argv for a returned PID or CLI session handle in the next tool response, with ready independent work. Reuse a working executable; do not guess absolute paths. Preregistration requires a known target and absence-tolerant cleanup. argv runs without a shell.",
+        description: `Register runnable cleanup argv for temporary resources kept live across calls: ${resourceExamples}. Use a returned PID, session handle, or created path as the target, with ready independent work in the same response. Reuse a working executable; do not guess absolute paths. Preregistration requires a known target and absence-tolerant cleanup. argv runs without a shell.`,
         args: {
           argv: tool.schema.array(tool.schema.string().min(1)).min(1),
           cwd: tool.schema.string().optional(),
