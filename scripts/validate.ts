@@ -46,7 +46,11 @@ const kimi = await readJson("adapters/kimi-code/kimi.plugin.json");
 if (kimi.systemPrompt !== cleanupInstruction) throw new Error("Kimi system prompt must match the default MCP guidance");
 const skill = await readFile(resolve(root, "plugins/atexit/skills/defer-cleanup/SKILL.md"), "utf8");
 // The description drives skill triggering and the body is what hosts load, so both copies must carry the scope.
-if (skill.split(resourceExamples).length - 1 !== 2) throw new Error("cleanup skill must name the resource scope in both its description and body");
+const sections = skill.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/);
+if (!sections) throw new Error("cleanup skill must have YAML frontmatter");
+const metadata = Bun.YAML.parse(sections[1]!) as { name?: unknown; description?: unknown } | null;
+if (metadata?.name !== "defer-cleanup" || typeof metadata.description !== "string") throw new Error("cleanup skill must declare its name and a string description");
+if (!metadata.description.includes(resourceExamples) || !sections[2]!.includes(resourceExamples)) throw new Error("cleanup skill must name the resource scope in both its description and body");
 const hermes = Bun.YAML.parse(await readFile(resolve(root, "adapters/hermes/config.yaml"), "utf8")) as { skills?: { auto_load?: string[] }; plugins?: { hook_callback_timeout?: number }; mcp_servers?: { atexit?: { command?: string; args?: string[]; env?: { AGENT_ATEXIT_STATE_DIR?: string } } }; hooks?: Record<string, { command?: string; matcher?: string; timeout?: number }[]> };
 if (!hermes.skills?.auto_load?.includes("defer-cleanup")) throw new Error("Hermes config must load the cleanup skill through native skills.auto_load");
 if (!hermes.mcp_servers?.atexit?.env?.AGENT_ATEXIT_STATE_DIR || !hermes.hooks?.post_tool_call?.length || !hermes.hooks?.on_session_finalize?.length) throw new Error("Hermes config must provide shared state and registration/finalization hooks");

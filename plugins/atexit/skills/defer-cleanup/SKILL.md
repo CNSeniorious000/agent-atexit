@@ -1,6 +1,6 @@
 ---
 name: defer-cleanup
-description: Register fallback cleanup with atexit tools for temporary resources kept live across tool calls: servers, browsers, containers, VMs, worktrees, temp dirs.
+description: "Register fallback cleanup with atexit tools for temporary resources kept live across tool calls: servers, browsers, containers, VMs, worktrees, temp dirs."
 ---
 
 # Deferred cleanup
