@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ActionStore, cancelGuidance, registerGuidance, resolveStateRoot, resourceExamples } from "@agent-atexit/core";
+import { ActionStore, resolveStateRoot } from "@agent-atexit/core";
+import { cancelGuidance, registerGuidance, resourceExamples } from "@agent-atexit/core/guidance";
 import { z } from "zod";
 import { cleanupInstruction, codexCleanupInstruction, hermesCleanupInstruction, claudeCleanupInstruction } from "./instructions";
 

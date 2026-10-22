@@ -3,6 +3,8 @@
   "version": "0.2.2",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": {
+    ".": "./src/index.ts",
+    "./guidance": "./src/guidance.ts"
+  }
 }
-

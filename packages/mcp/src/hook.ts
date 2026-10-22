@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ActionStore, executeRun, resolveStateRoot, type RunRecord, type SessionBinding } from "@agent-atexit/core";
-import { claudeCleanupInstruction } from "./instructions";
+import { claudeCleanupInstruction } from "./claude";
 import { verificationFeedback } from "./verification";
 
 interface HookInput {

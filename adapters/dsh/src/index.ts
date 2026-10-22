@@ -4,7 +4,8 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { ActionStore, cancelGuidance, registerGuidance, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
+import { ActionStore, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
+import { cancelGuidance, registerGuidance } from "../../../packages/core/src/guidance.ts";
 
 export const name = "atexit";
 export const inject = ["tools"];

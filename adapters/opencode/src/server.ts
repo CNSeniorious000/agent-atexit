@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { ActionStore, resolveStateRoot, resourceExamples, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
+import { ActionStore, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
+import { resourceExamples } from "../../../packages/core/src/guidance.ts";
 import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 
 type ToolCall = { tool_name?: string; tool_input?: { command?: unknown; content?: unknown; new_string?: unknown; newString?: unknown; patchText?: unknown } };
