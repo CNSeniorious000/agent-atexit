@@ -1,5 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { resourceExamples } from "../packages/core/src/guidance.ts";
+import { cleanupInstruction } from "../packages/mcp/src/instructions.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const readJson = async (path: string) => JSON.parse(await readFile(resolve(root, path), "utf8")) as Record<string, unknown>;
@@ -40,7 +42,16 @@ if (!("mcpServers" in claudeMcp)) throw new Error("Claude MCP config must contai
 const hooks = await readJson("plugins/atexit/hooks/hooks.json") as { hooks?: Record<string, unknown> };
 if (!hooks.hooks?.SessionStart || !hooks.hooks?.PostToolUse || !hooks.hooks?.SessionEnd) throw new Error("portable hooks must open sessions, bind registrations, and close sessions");
 const kimi = await readJson("adapters/kimi-code/kimi.plugin.json");
-if (typeof kimi.systemPrompt !== "string" || !/register.*fallback cleanup/is.test(kimi.systemPrompt) || !/cleanup succeeds.*cancel/is.test(kimi.systemPrompt)) throw new Error("Kimi system prompt must cover fallback registration and cancellation after successful cleanup");
+// Kimi launches the portable server without a host flag, so its manifest prompt and the MCP instructions must not drift.
+if (typeof kimi.systemPrompt !== "string" || kimi.systemPrompt !== cleanupInstruction || !/register.*fallback cleanup/is.test(kimi.systemPrompt) || !/cleanup succeeds.*cancel/is.test(kimi.systemPrompt)) throw new Error("Kimi system prompt must cover fallback registration and cancellation after successful cleanup");
+// The description drives skill triggering and the body is what hosts load, so both must carry the scope. Parsing the frontmatter also rejects a description that hosts cannot read at all.
+const skill = await readFile(resolve(root, "plugins/atexit/skills/defer-cleanup/SKILL.md"), "utf8");
+const sections = skill.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/);
+if (!sections) throw new Error("cleanup skill must have YAML frontmatter");
+const metadata = Bun.YAML.parse(sections[1]!) as { name?: unknown; description?: unknown } | null;
+if (metadata?.name !== "defer-cleanup" || typeof metadata.description !== "string") throw new Error("cleanup skill must declare its name and a string description");
+const skillText = `${metadata.description}\n${sections[2]!}`;
+if (!metadata.description.includes(resourceExamples) || !sections[2]!.includes(resourceExamples) || !/register[\s\S]*fallback cleanup/i.test(skillText) || !/cleanup succeeds[\s\S]*cancel/i.test(skillText)) throw new Error("cleanup skill must cover the resource scope, fallback registration, and cancellation after successful cleanup");
 const hermes = Bun.YAML.parse(await readFile(resolve(root, "adapters/hermes/config.yaml"), "utf8")) as { skills?: { auto_load?: string[] }; plugins?: { hook_callback_timeout?: number }; mcp_servers?: { atexit?: { command?: string; args?: string[]; env?: { AGENT_ATEXIT_STATE_DIR?: string } } }; hooks?: Record<string, { command?: string; matcher?: string; timeout?: number }[]> };
 if (!hermes.skills?.auto_load?.includes("defer-cleanup")) throw new Error("Hermes config must load the cleanup skill through native skills.auto_load");
 if (!hermes.mcp_servers?.atexit?.env?.AGENT_ATEXIT_STATE_DIR || !hermes.hooks?.post_tool_call?.length || !hermes.hooks?.on_session_finalize?.length) throw new Error("Hermes config must provide shared state and registration/finalization hooks");
