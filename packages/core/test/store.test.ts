@@ -17,6 +17,86 @@ afterEach(async () => {
 });
 
 describe("ActionStore", () => {
+  test("resume recovers a killed owner's pending cleanup while preserving live owners and at-most-once execution", async () => {
+    const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "crashed" }, output = join(root, "executed.txt");
+    const source = new URL("../src/store.ts", import.meta.url).pathname;
+    const argv = [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'once')`];
+    const code = `const { ActionStore } = await import(${JSON.stringify(source)}); const store = new ActionStore(${JSON.stringify(root)}), binding = ${JSON.stringify({ ...binding, generation: "child" })}; await store.openSession(binding); const registration = await store.register({argv:${JSON.stringify(argv)}}); await store.bind(registration.id, binding); console.log(registration.id); setInterval(() => {}, 1000);`;
+    const child = Bun.spawn([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const reader = child.stdout.getReader();
+      const ready = await Promise.race([reader.read(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("child did not bind cleanup")), 2_000); })]);
+      reader.releaseLock(); clearTimeout(timer);
+      const id = new TextDecoder().decode(ready.value).trim(), live = { ...binding, generation: "live" };
+      expect((await store.get(id)).generationOwner?.pid).toBe(child.pid);
+      await store.openSession(live);
+      expect(await store.closeAndClaim(live)).toBeUndefined();
+      expect((await store.get(id)).state).toBe("pending");
+      child.kill("SIGKILL"); await child.exited;
+      const resumed = { ...binding, generation: "resumed" };
+      await store.openSession(resumed);
+      expect(await store.closeAndClaim(live)).toBeUndefined();
+      const run = await store.closeAndClaim(resumed);
+      expect(run?.actionIds).toEqual([id]);
+      expect(await store.closeAndClaim(resumed)).toBeUndefined();
+      await executeRun(root, run!.id); await executeRun(root, run!.id);
+      expect(await readFile(output, "utf8")).toBe("once");
+    } finally { clearTimeout(timer); child.kill("SIGKILL"); await child.exited; }
+  });
+
+  test("generation takeover fences delayed generationless bindings without invalidating duplicate starts", async () => {
+    for (const previous of ["absent", "legacy", "generation"]) {
+      const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "takeover" }, current = { ...binding, generation: "current" };
+      if (previous !== "absent") await store.openSession(previous === "legacy" ? binding : { ...binding, generation: "old" });
+      const stale = await store.register({ argv: ["echo", "stale"], key: "server" });
+      await store.openSession(current);
+      const registration = await store.register({ argv: ["echo", "current"], key: "server" });
+      await store.openSession(current);
+      expect((await store.bind(registration.id, current)).registration.state).toBe("pending");
+      expect((await store.bind(stale.id, binding)).lateRun?.actionIds).toEqual([stale.id]);
+      expect((await store.get(registration.id)).state).toBe("pending");
+      expect((await store.closeAndClaim(current))?.actionIds).toEqual([registration.id]);
+    }
+  });
+
+  test("the current generation recovers legacy pending records without letting a stale owner drain them", async () => {
+    const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "upgrade" };
+    const legacy = await store.register({ argv: ["echo", "legacy"] });
+    await store.bind(legacy.id, binding);
+    const old = { ...binding, generation: "old" }, current = { ...binding, generation: "current" };
+    await store.openSession(old); await store.openSession(current);
+    const registration = await store.register({ argv: ["echo", "current"] });
+    await store.bind(registration.id, current);
+    expect(await store.closeAndClaim(old)).toBeUndefined();
+    expect((await store.get(legacy.id)).state).toBe("pending");
+    expect(new Set((await store.closeAndClaim(current))?.actionIds)).toEqual(new Set([legacy.id, registration.id]));
+    expect(await store.closeAndClaim(current)).toBeUndefined();
+  });
+
+  test("a delayed open cannot overwrite a newer generation even after it closes", async () => {
+    for (const closeNewer of [false, true]) {
+      const { root, store } = await makeStore(), newer = new ActionStore(root), binding = { cwd: root, host: "opencode", sessionId: "reversed" };
+      const old = { ...binding, generation: "old" }, current = { ...binding, generation: "current" };
+      // Pause after ticket allocation but before lock acquisition to deterministically reverse the opens.
+      const internals = store as unknown as { withSessionLock: <T>(key: string, operation: () => Promise<T>) => Promise<T> };
+      const lock = internals.withSessionLock.bind(store), reached = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      internals.withSessionLock = async (key, operation) => { reached.resolve(); await release.promise; return lock(key, operation); };
+      const opening = store.openSession(old);
+      try {
+        await reached.promise; await newer.openSession(current);
+        if (closeNewer) await newer.closeAndClaim(current);
+      } finally { release.resolve(); await opening; }
+      const registration = await newer.register({ argv: ["echo", "current"] });
+      const bound = await newer.bind(registration.id, current);
+      expect(bound.registration.state).toBe(closeNewer ? "claimed" : "pending");
+      const stale = await store.register({ argv: ["echo", "stale"] });
+      expect((await store.bind(stale.id, old)).lateRun?.actionIds).toEqual([stale.id]);
+      expect(await store.closeAndClaim(old)).toBeUndefined();
+      if (!closeNewer) expect((await newer.closeAndClaim(current))?.actionIds).toEqual([registration.id]);
+    }
+  });
+
   test("rejects traversal IDs before lock recovery or run-lock creation touches sibling files", async () => {
     const { root } = await makeStore(), store = new ActionStore(join(root, "state")), victim = join(root, "victim");
     await store.init(); await mkdir(victim); await writeFile(join(victim, "keep.txt"), "untouched");

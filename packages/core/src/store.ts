@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { sessionKey } from "./paths.ts";
 import type { BindResult, CancelResult, RegisterInput, RegistrationRecord, RunRecord, SessionBinding } from "./types.ts";
@@ -10,6 +11,9 @@ const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
 const LOCK_STALE_MS = 10_000;
 
 interface SessionRecord {
+  generation?: string;
+  openOrder?: number;
+  deleted?: boolean;
   closedAt?: string;
   openedSequence?: number;
   cwd: string;
@@ -38,6 +42,14 @@ async function readJson<T>(path: string): Promise<T> {
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : undefined;
+}
+
+function abandonedGeneration(registration: RegistrationRecord): boolean {
+  const owner = registration.generationOwner;
+  // PID reuse, remote hosts, and permission errors are ambiguous: never drain a possibly live owner.
+  if (!owner || owner.hostname !== hostname() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
+  try { process.kill(owner.pid, 0); return false; }
+  catch (error) { return errorCode(error) === "ESRCH"; }
 }
 
 export class ActionStore {
@@ -78,9 +90,9 @@ export class ActionStore {
       return this.withSessionLock(key, async () => {
         const session = await this.getSession(key);
         // Old writers have no comparable sequence; keep their cleanup pending without letting it replace a current fallback.
-        const late = Boolean(session?.closedAt) || (session?.openedSequence !== undefined && current.createdSequence !== undefined && current.createdSequence < session.openedSequence);
+        const late = Boolean(session?.closedAt) || (binding.generation !== undefined && session?.generation !== binding.generation) || (session?.openedSequence !== undefined && current.createdSequence !== undefined && current.createdSequence < session.openedSequence);
         if (current.key && current.createdSequence !== undefined && !late) await this.cancelReplaced(current, key);
-        const registration: RegistrationRecord = { ...current, boundAt: new Date().toISOString(), cwd: current.cwd ?? binding.cwd, host: binding.host, sessionKey: key, state: "pending" };
+        const registration: RegistrationRecord = { ...current, ...(binding.generation === undefined ? {} : { generation: binding.generation, generationOwner: { pid: process.pid, hostname: hostname() } }), boundAt: new Date().toISOString(), cwd: current.cwd ?? binding.cwd, host: binding.host, sessionKey: key, state: "pending" };
         await this.writeRegistration(registration);
         if (!late) return { registration };
         const lateRun = await this.claimPendingLocked(key, binding.host, id);
@@ -91,21 +103,27 @@ export class ActionStore {
 
   async openSession(binding: SessionBinding): Promise<void> {
     await this.init();
+    // Reserve before waiting for the session lock: lock acquisition can reverse competing opens.
+    const openOrder = binding.generation === undefined ? undefined : await this.nextSequence();
     const key = sessionKey(binding.host, binding.sessionId);
     await this.withSessionLock(key, async () => {
       const session = await this.getSession(key);
-      if (session && !session.closedAt) return;
+      if (session?.deleted || (openOrder !== undefined && session?.openOrder !== undefined && openOrder < session.openOrder) || (session && !session.closedAt && (binding.generation === undefined || binding.generation === session.generation))) return;
       // SessionStart is the only reopen signal; register never revives a closed session. Duplicate starts are harmless.
-      await atomicWrite(this.sessionPath(key), { ...(session?.closedAt ? { openedSequence: await this.nextSequence() } : {}), cwd: binding.cwd, host: binding.host, sessionKey: key });
+      // Generationless writers also need a sequence fence when a new owner takes over a live session.
+      await atomicWrite(this.sessionPath(key), { ...(binding.generation === undefined ? {} : { generation: binding.generation, openOrder }), ...(session?.closedAt || session?.generation !== binding.generation ? { openedSequence: await this.nextSequence() } : {}), cwd: binding.cwd, host: binding.host, sessionKey: key });
     });
   }
 
-  async closeAndClaim(binding: SessionBinding): Promise<RunRecord | undefined> {
+  async closeAndClaim(binding: SessionBinding, permanent = false): Promise<RunRecord | undefined> {
     await this.init();
     const key = sessionKey(binding.host, binding.sessionId);
     return this.withSessionLock(key, async () => {
-      await atomicWrite(this.sessionPath(key), { ...await this.getSession(key), closedAt: new Date().toISOString(), cwd: binding.cwd, host: binding.host, sessionKey: key });
-      return this.claimPendingLocked(key, binding.host);
+      const session = await this.getSession(key);
+      // A superseded instance may drain only its own generation, never close the current owner.
+      if (permanent || binding.generation === undefined || !session || session.generation === binding.generation) await atomicWrite(this.sessionPath(key), { ...session, ...(permanent ? { deleted: true } : {}), closedAt: new Date().toISOString(), cwd: binding.cwd, host: binding.host, sessionKey: key });
+      // Only the current owner recovers legacy or abandoned records; stale instances must not drain them.
+      return this.claimPendingLocked(key, binding.host, undefined, permanent ? undefined : binding.generation, session?.generation === binding.generation);
     });
   }
 
@@ -181,8 +199,8 @@ export class ActionStore {
     }
   }
 
-  private async claimPendingLocked(key: string, host: string, onlyId?: string): Promise<RunRecord | undefined> {
-    const pending = (await this.list()).filter((registration) => registration.sessionKey === key && registration.state === "pending" && (onlyId === undefined || registration.id === onlyId)).toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+  private async claimPendingLocked(key: string, host: string, onlyId?: string, generation?: string, recoverOrphans = false): Promise<RunRecord | undefined> {
+    const pending = (await this.list()).filter((registration) => registration.sessionKey === key && registration.state === "pending" && (generation === undefined || registration.generation === generation || (recoverOrphans && (registration.generation === undefined || abandonedGeneration(registration)))) && (onlyId === undefined || registration.id === onlyId)).toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
     if (pending.length === 0) return undefined;
     const now = new Date().toISOString();
     const run: RunRecord = { actionIds: pending.map((registration) => registration.id), createdAt: now, host, id: randomUUID(), sessionKey: key, state: "claimed" };
