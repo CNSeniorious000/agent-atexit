@@ -56,6 +56,8 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
   const root = resolveStateRoot();
   const store = new ActionStore(root);
   const sessions = new Map<string, SessionBinding>();
+  const opened = new Map<string, Promise<void>>(), deleted = new Set<string>();
+  let disposed = false;
 
   async function startRun(run: RunRecord): Promise<void> {
     const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
@@ -67,13 +69,18 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
     });
   }
 
-  function binding(context: ToolContext): SessionBinding {
+  async function binding(context: ToolContext): Promise<SessionBinding> {
+    if (disposed) throw new Error("OpenCode plugin instance is disposed");
     const value = { cwd: context.directory, host: "opencode", sessionId: context.sessionID };
     sessions.set(context.sessionID, value);
+    // Reopen once per live instance, before registration I/O. Deletion/disposal must remain terminal within this instance.
+    if (!opened.has(context.sessionID)) opened.set(context.sessionID, deleted.has(context.sessionID) ? Promise.resolve() : store.openSession(value));
+    await opened.get(context.sessionID);
     return value;
   }
 
   async function closeSession(value: SessionBinding): Promise<void> {
+    await opened.get(value.sessionId);
     const run = await store.closeAndClaim(value);
     if (run) await startRun(run);
   }
@@ -138,11 +145,14 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
       if (input.tool === "bash" && Number.isInteger(output.metadata?.exit)) output.output += `\n\n<shell_metadata>\nExit code: ${output.metadata.exit}\n</shell_metadata>`;
     },
     dispose: async () => {
+      if (disposed) return;
+      disposed = true;
       await Promise.all([...sessions.values()].map(closeSession));
     },
     event: async ({ event }) => {
       if (event.type !== "session.deleted") return;
       const sessionId = event.properties.info.id;
+      deleted.add(sessionId);
       // Persist deletion even before the first binding, and after a process restart.
       const value = sessions.get(sessionId) ?? { host: "opencode", sessionId, cwd: context.directory ?? process.cwd() };
       await closeSession(value);
@@ -157,9 +167,9 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
           timeout_ms: tool.schema.number().int().min(100).max(86_400_000).optional(),
         },
         execute: async ({ argv, cwd, key, timeout_ms }, context) => {
+          const owner = await binding(context);
           const effectiveCwd = cwd ?? context.directory;
           if (process.env.AGENT_ATEXIT_ASK === "1") await context.ask({ always: [], metadata: { argv, cwd: effectiveCwd }, patterns: [JSON.stringify(argv)], permission: "atexit_register" });
-          const owner = binding(context);
           const registration = await store.register({ argv: argv as [string, ...string[]], cwd: effectiveCwd, ...(key === undefined ? {} : { key }), ...(timeout_ms === undefined ? {} : { timeoutMs: timeout_ms }) });
           const result = await store.bind(registration.id, owner);
           if (result.lateRun) await startRun(result.lateRun);

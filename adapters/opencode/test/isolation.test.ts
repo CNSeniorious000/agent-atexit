@@ -55,3 +55,31 @@ test("failed worker spawn executes the claimed run in-process", async () => {
     await f.wait("fallback");
   } finally { if (path === undefined) delete process.env.PATH; else process.env.PATH = path; await f.close(); }
 });
+
+test("resuming a disposed session keeps new cleanup pending and repeated old disposal cannot close it", async () => {
+  const f = await fixture();
+  try {
+    const first = await f.hooks();
+    await first.tool.atexit_register.execute({ argv: f.argv("old") }, f.context("resume"));
+    await first.dispose(); await f.wait("old");
+    const resumed = await f.hooks();
+    const result = JSON.parse(await resumed.tool.atexit_register.execute({ argv: f.argv("new") }, f.context("resume")));
+    await first.dispose();
+    expect((await new ActionStore(f.root).get(result.registration_id)).state).toBe("pending");
+    expect(await Bun.file(join(f.root, "new")).exists()).toBe(false);
+    await expect(first.tool.atexit_register.execute({ argv: f.argv("stale") }, f.context("resume"))).rejects.toThrow("disposed");
+    await resumed.dispose(); await f.wait("new");
+  } finally { await f.close(); }
+});
+
+test("deletion while registration waits for permission cannot be undone by reopening", async () => {
+  const f = await fixture(), saved = process.env.AGENT_ATEXIT_ASK;
+  try {
+    const hooks = await f.hooks(), waiting = Promise.withResolvers<void>(), proceed = Promise.withResolvers<void>();
+    process.env.AGENT_ATEXIT_ASK = "1";
+    const registration = hooks.tool.atexit_register.execute({ argv: f.argv("raced") }, { ...f.context("race"), async ask() { waiting.resolve(); await proceed.promise; } });
+    await waiting.promise;
+    await hooks.event({ event: { type: "session.deleted", properties: { info: { id: "race" } } } });
+    proceed.resolve(); await registration; await f.wait("raced");
+  } finally { if (saved === undefined) delete process.env.AGENT_ATEXIT_ASK; else process.env.AGENT_ATEXIT_ASK = saved; await f.close(); }
+});
