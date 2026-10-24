@@ -1,7 +1,8 @@
+import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 for (const lifecycle of ["dispose", "session.deleted"] as const) test(`native v2 entry registers tools and drains on ${lifecycle}`, async () => {
   // Bundled plugin modules own process-wide stores; isolate native generations like their hosts do.
@@ -11,7 +12,7 @@ for (const lifecycle of ["dispose", "session.deleted"] as const) test(`native v2
     if (code) throw new Error(output);
     return;
   }
-  const root = await mkdtemp("/tmp/atexit-v2-"), saved = process.env.AGENT_ATEXIT_STATE_DIR;
+  const root = await mkdtemp(join(tmpdir(), "atexit-v2-")), saved = process.env.AGENT_ATEXIT_STATE_DIR;
   process.env.AGENT_ATEXIT_STATE_DIR = root;
   const tools = new Map<string, any>(), hooks = new Map<string, any>(), permissions: unknown[] = [];
   let send: (event: unknown) => void = () => {};
@@ -39,7 +40,7 @@ for (const lifecycle of ["dispose", "session.deleted"] as const) test(`native v2
     delete process.env.AGENT_ATEXIT_ASK;
     expect(JSON.parse(result.content).state).toBe("pending");
     expect(permissions).toMatchObject([{ sessionID: "session-a", action: "atexit_register" }]);
-    const event = { system: [] }; await hooks.get("context")(event); expect(JSON.stringify(event)).toContain("cleanup");
+    const event = { system: [] }; await hooks.get("context")(event); expect(JSON.stringify(event)).toContain("Cancel only after an earlier result proves that exact target released");
     if (lifecycle === "session.deleted") send({ type: lifecycle, data: { sessionID: "session-a" } });
     else await cleanup();
     for (let i = 0; i < 100 && !await Bun.file(output).exists(); i++) await Bun.sleep(20);

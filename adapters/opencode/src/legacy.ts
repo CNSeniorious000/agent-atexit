@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { ActionStore, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
+import { ActionStore, executeRun, sessionKey, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
 import { resourceExamples } from "../../../packages/core/src/guidance.ts";
 import { tool, type PluginModule, type ToolContext } from "@opencode-ai/plugin";
 
@@ -51,31 +51,40 @@ function verificationFeedback(calls: readonly ToolCall[]): string {
   return [diagnostics, lifetime].filter(Boolean).join("\n\n");
 }
 
-const root = resolveStateRoot();
-const store = new ActionStore(root);
-const sessions = new Map<string, SessionBinding>();
 const opencodeGuidance = "Batch eligible bookkeeping with ready independent task tools, including cleanup. Planning and filler do not count. Respect task ordering and data dependencies.\n\nRegister returned PIDs or session handles in the next tool batch; readiness checks and planning cannot postpone it. Cancel only after an earlier result proves that exact target released; for a PID, require process exit. Sibling calls cannot supply prerequisites; use checked awaits inside orchestration or later responses. Standalone bookkeeping is valid only when no real work, including cleanup, remains. Do not infer absence from checks that hide their errors. Account for partial acquisition before retrying.";
+async function createHooks(context: Parameters<PluginModule["server"]>[0]): ReturnType<PluginModule["server"]> {
+  const root = resolveStateRoot();
+  const store = new ActionStore(root);
+  const sessions = new Map<string, SessionBinding>();
 
-function startRun(run: RunRecord): void {
-  const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
-  const child = spawn("node", [worker, "--state-dir", root, "--run-id", run.id], { detached: true, env: { ...process.env, AGENT_ATEXIT_STATE_DIR: root }, stdio: "ignore" });
-  child.unref();
-}
+  async function startRun(run: RunRecord): Promise<void> {
+    const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
+    const child = spawn("node", [worker, "--state-dir", root, "--run-id", run.id], { detached: true, env: { ...process.env, AGENT_ATEXIT_STATE_DIR: root }, stdio: "ignore" });
+    await new Promise<void>((resolve, reject) => { child.once("spawn", () => { child.unref(); resolve(); }); child.once("error", reject); }).catch(async error => {
+      // No worker started: execute the already-claimed run here instead of abandoning it.
+      console.error("agent-atexit worker spawn failed; running cleanup in-process", error);
+      await executeRun(root, run.id);
+    });
+  }
 
-function binding(context: ToolContext): SessionBinding {
-  const value = { cwd: context.directory, host: "opencode", sessionId: context.sessionID };
-  sessions.set(context.sessionID, value);
-  return value;
-}
+  function binding(context: ToolContext): SessionBinding {
+    const value = { cwd: context.directory, host: "opencode", sessionId: context.sessionID };
+    sessions.set(context.sessionID, value);
+    return value;
+  }
 
-async function closeSession(value: SessionBinding): Promise<void> {
-  const run = await store.closeAndClaim(value);
-  if (run) startRun(run);
-}
+  async function closeSession(value: SessionBinding): Promise<void> {
+    const run = await store.closeAndClaim(value);
+    if (run) await startRun(run);
+  }
 
-const plugin: PluginModule = {
-  id: "agent-atexit.opencode",
-  server: async () => ({
+
+  const owned = async (id: string, context: ToolContext) => {
+    const record = await store.get(id);
+    if (record.sessionKey !== sessionKey("opencode", context.sessionID)) throw new Error("Registration does not belong to this session");
+    return record;
+  };
+  return ({
     config: async (config) => {
       // OpenCode needs explicit plugin skill paths; its legacy SDK omits this config field.
       const skills = (config as typeof config & { skills?: { paths?: string[] } }).skills ??= {};
@@ -134,8 +143,9 @@ const plugin: PluginModule = {
     event: async ({ event }) => {
       if (event.type !== "session.deleted") return;
       const sessionId = event.properties.info.id;
-      const value = sessions.get(sessionId);
-      if (value) await closeSession(value);
+      // Persist deletion even before the first binding, and after a process restart.
+      const value = sessions.get(sessionId) ?? { host: "opencode", sessionId, cwd: context.directory ?? process.cwd() };
+      await closeSession(value);
     },
     tool: {
       atexit_register: tool({
@@ -149,24 +159,25 @@ const plugin: PluginModule = {
         execute: async ({ argv, cwd, key, timeout_ms }, context) => {
           const effectiveCwd = cwd ?? context.directory;
           if (process.env.AGENT_ATEXIT_ASK === "1") await context.ask({ always: [], metadata: { argv, cwd: effectiveCwd }, patterns: [JSON.stringify(argv)], permission: "atexit_register" });
+          const owner = binding(context);
           const registration = await store.register({ argv: argv as [string, ...string[]], cwd: effectiveCwd, ...(key === undefined ? {} : { key }), ...(timeout_ms === undefined ? {} : { timeoutMs: timeout_ms }) });
-          const result = await store.bind(registration.id, binding(context));
-          if (result.lateRun) startRun(result.lateRun);
+          const result = await store.bind(registration.id, owner);
+          if (result.lateRun) await startRun(result.lateRun);
           return JSON.stringify({ argv: result.registration.argv, registration_id: registration.id, state: result.registration.state });
         },
       }),
       atexit_cancel: tool({
         description: "Cancel the returned registration ID without running its fallback. Before choosing this call, obtain a completed result proving that exact target is released or was never created. Sibling calls cannot supply this prerequisite; await and check cleanup inside orchestration or use a later response. Signal delivery, a closed port for a PID, and hidden inspection errors are not proof. Cleanup success counts only when every successful path guarantees release. Batch with remaining independent work, including other cleanup; standalone is valid when none remains. Claimed or running commands cannot be cancelled.",
         args: { registration_id: tool.schema.string().uuid() },
-        execute: async ({ registration_id }) => JSON.stringify(await store.cancel(registration_id)),
+        execute: async ({ registration_id }, context) => { await owned(registration_id, context); return JSON.stringify(await store.cancel(registration_id)); },
       }),
       atexit_list: tool({
         description: "Inspect atexit registrations by IDs previously returned to this session. Avoid spending a model turn only on registry bookkeeping when independent task work is ready.",
         args: { registration_ids: tool.schema.array(tool.schema.string().uuid()).min(1).max(100) },
-        execute: async ({ registration_ids }) => JSON.stringify({ registrations: await store.list(registration_ids) }),
+        execute: async ({ registration_ids }, context) => JSON.stringify({ registrations: await Promise.all(registration_ids.map(id => owned(id, context))) }),
       }),
     },
-  }),
-};
+  });
+}
 
-export default plugin;
+export default { id: "agent-atexit.opencode", server: createHooks } satisfies PluginModule;
