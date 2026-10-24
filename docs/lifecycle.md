@@ -34,7 +34,7 @@ Registrations and true reopen boundaries use permanent sequence tickets, not tim
 
 Kimi's workspace MCP connection is not session-scoped and tool calls carry no protocol-level session ID. The adapter uses Kimi's `PostToolUse` payload to bind the returned registration ID to the authoritative session ID without adding an approval prompt. `SessionEnd` reports `exit` or `archive`. Normal TUI `/exit` was verified with Kimi Code 2.3.1; the emergency `SIGHUP` path can bypass cleanup.
 
-Do not rely on deferred cleanup after `kimi -p`: in Kimi Code 2.3.1, the native prompt-mode run returned successfully and supplied `PostToolUse`, but did not emit `SessionEnd`. Its registration remained pending after the process exited. Clean up resources explicitly in prompt-mode automation; a completed turn or closed MCP connection is not a substitute for the owning session's end event.
+Do not rely on deferred cleanup after `kimi -p`: in Kimi Code 2.3.1, the native prompt-mode run returned successfully and supplied `PostToolUse`, but did not emit `SessionEnd`. Its registration remained pending after the process exited. In prompt-mode automation, clean up resources explicitly, verify their release, then cancel each fallback by its registration ID (or avoid registering deferred cleanup for those resources). A completed turn or closed MCP connection is not a substitute for the owning session's end event.
 
 ### OpenCode
 
