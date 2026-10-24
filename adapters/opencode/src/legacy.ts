@@ -184,12 +184,17 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
       atexit_cancel: tool({
         description: "Cancel the returned registration ID without running its fallback. Before choosing this call, obtain a completed result proving that exact target is released or was never created. Sibling calls cannot supply this prerequisite; await and check cleanup inside orchestration or use a later response. Signal delivery, a closed port for a PID, and hidden inspection errors are not proof. Cleanup success counts only when every successful path guarantees release. Batch with remaining independent work, including other cleanup; standalone is valid when none remains. Claimed or running commands cannot be cancelled.",
         args: { registration_id: tool.schema.string().uuid() },
-        execute: async ({ registration_id }, context) => { await owned(registration_id, context); return JSON.stringify(await store.cancel(registration_id)); },
+        execute: async ({ registration_id }, context) => { await owned(registration_id, context); await binding(context); return JSON.stringify(await store.cancel(registration_id)); },
       }),
       atexit_list: tool({
         description: "Inspect atexit registrations by IDs previously returned to this session. Avoid spending a model turn only on registry bookkeeping when independent task work is ready.",
         args: { registration_ids: tool.schema.array(tool.schema.string().uuid()).min(1).max(100) },
-        execute: async ({ registration_ids }, context) => JSON.stringify({ registrations: await Promise.all(registration_ids.map(id => owned(id, context))) }),
+        execute: async ({ registration_ids }, context) => {
+          const registrations = await Promise.all(registration_ids.map(id => owned(id, context)));
+          // Resumed sessions can use existing IDs without registering anything new; disposal still needs to track them.
+          await binding(context);
+          return JSON.stringify({ registrations });
+        },
       }),
     },
   });
