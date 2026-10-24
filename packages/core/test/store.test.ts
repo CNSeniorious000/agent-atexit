@@ -17,6 +17,34 @@ afterEach(async () => {
 });
 
 describe("ActionStore", () => {
+  test("resume recovers a killed owner's pending cleanup while preserving live owners and at-most-once execution", async () => {
+    const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "crashed" }, output = join(root, "executed.txt");
+    const source = new URL("../src/store.ts", import.meta.url).pathname;
+    const argv = [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'once')`];
+    const code = `const { ActionStore } = await import(${JSON.stringify(source)}); const store = new ActionStore(${JSON.stringify(root)}), binding = ${JSON.stringify({ ...binding, generation: "child" })}; await store.openSession(binding); const registration = await store.register({argv:${JSON.stringify(argv)}}); await store.bind(registration.id, binding); console.log(registration.id); setInterval(() => {}, 1000);`;
+    const child = Bun.spawn([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const reader = child.stdout.getReader();
+      const ready = await Promise.race([reader.read(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("child did not bind cleanup")), 2_000); })]);
+      reader.releaseLock(); clearTimeout(timer);
+      const id = new TextDecoder().decode(ready.value).trim(), live = { ...binding, generation: "live" };
+      expect((await store.get(id)).generationOwner?.pid).toBe(child.pid);
+      await store.openSession(live);
+      expect(await store.closeAndClaim(live)).toBeUndefined();
+      expect((await store.get(id)).state).toBe("pending");
+      child.kill("SIGKILL"); await child.exited;
+      const resumed = { ...binding, generation: "resumed" };
+      await store.openSession(resumed);
+      expect(await store.closeAndClaim(live)).toBeUndefined();
+      const run = await store.closeAndClaim(resumed);
+      expect(run?.actionIds).toEqual([id]);
+      expect(await store.closeAndClaim(resumed)).toBeUndefined();
+      await executeRun(root, run!.id); await executeRun(root, run!.id);
+      expect(await readFile(output, "utf8")).toBe("once");
+    } finally { clearTimeout(timer); child.kill("SIGKILL"); await child.exited; }
+  });
+
   test("generation takeover fences delayed generationless bindings without invalidating duplicate starts", async () => {
     for (const previous of ["absent", "legacy", "generation"]) {
       const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "takeover" }, current = { ...binding, generation: "current" };

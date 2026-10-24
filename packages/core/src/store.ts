@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { sessionKey } from "./paths.ts";
 import type { BindResult, CancelResult, RegisterInput, RegistrationRecord, RunRecord, SessionBinding } from "./types.ts";
@@ -43,6 +44,14 @@ function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : undefined;
 }
 
+function abandonedGeneration(registration: RegistrationRecord): boolean {
+  const owner = registration.generationOwner;
+  // PID reuse, remote hosts, and permission errors are ambiguous: never drain a possibly live owner.
+  if (!owner || owner.hostname !== hostname() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
+  try { process.kill(owner.pid, 0); return false; }
+  catch (error) { return errorCode(error) === "ESRCH"; }
+}
+
 export class ActionStore {
   readonly root: string;
 
@@ -83,7 +92,7 @@ export class ActionStore {
         // Old writers have no comparable sequence; keep their cleanup pending without letting it replace a current fallback.
         const late = Boolean(session?.closedAt) || (binding.generation !== undefined && session?.generation !== binding.generation) || (session?.openedSequence !== undefined && current.createdSequence !== undefined && current.createdSequence < session.openedSequence);
         if (current.key && current.createdSequence !== undefined && !late) await this.cancelReplaced(current, key);
-        const registration: RegistrationRecord = { ...current, ...(binding.generation === undefined ? {} : { generation: binding.generation }), boundAt: new Date().toISOString(), cwd: current.cwd ?? binding.cwd, host: binding.host, sessionKey: key, state: "pending" };
+        const registration: RegistrationRecord = { ...current, ...(binding.generation === undefined ? {} : { generation: binding.generation, generationOwner: { pid: process.pid, hostname: hostname() } }), boundAt: new Date().toISOString(), cwd: current.cwd ?? binding.cwd, host: binding.host, sessionKey: key, state: "pending" };
         await this.writeRegistration(registration);
         if (!late) return { registration };
         const lateRun = await this.claimPendingLocked(key, binding.host, id);
@@ -113,7 +122,7 @@ export class ActionStore {
       const session = await this.getSession(key);
       // A superseded instance may drain only its own generation, never close the current owner.
       if (permanent || binding.generation === undefined || !session || session.generation === binding.generation) await atomicWrite(this.sessionPath(key), { ...session, ...(permanent ? { deleted: true } : {}), closedAt: new Date().toISOString(), cwd: binding.cwd, host: binding.host, sessionKey: key });
-      // Only the current owner recovers pre-upgrade records; stale instances must not drain them.
+      // Only the current owner recovers legacy or abandoned records; stale instances must not drain them.
       return this.claimPendingLocked(key, binding.host, undefined, permanent ? undefined : binding.generation, session?.generation === binding.generation);
     });
   }
@@ -190,8 +199,8 @@ export class ActionStore {
     }
   }
 
-  private async claimPendingLocked(key: string, host: string, onlyId?: string, generation?: string, includeLegacy = false): Promise<RunRecord | undefined> {
-    const pending = (await this.list()).filter((registration) => registration.sessionKey === key && registration.state === "pending" && (generation === undefined || registration.generation === generation || (includeLegacy && registration.generation === undefined)) && (onlyId === undefined || registration.id === onlyId)).toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+  private async claimPendingLocked(key: string, host: string, onlyId?: string, generation?: string, recoverOrphans = false): Promise<RunRecord | undefined> {
+    const pending = (await this.list()).filter((registration) => registration.sessionKey === key && registration.state === "pending" && (generation === undefined || registration.generation === generation || (recoverOrphans && (registration.generation === undefined || abandonedGeneration(registration)))) && (onlyId === undefined || registration.id === onlyId)).toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
     if (pending.length === 0) return undefined;
     const now = new Date().toISOString();
     const run: RunRecord = { actionIds: pending.map((registration) => registration.id), createdAt: now, host, id: randomUUID(), sessionKey: key, state: "claimed" };

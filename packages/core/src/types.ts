@@ -16,6 +16,7 @@ export interface SessionBinding {
 
 export interface RegistrationRecord {
   generation?: string;
+  generationOwner?: { pid: number; hostname: string };
   argv: [string, ...string[]];
   boundAt?: string;
   cancelledAt?: string;
