@@ -58,6 +58,7 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
   const store = new ActionStore(root);
   const sessions = new Map<string, SessionBinding>();
   const opened = new Map<string, Promise<void>>(), generation = randomUUID();
+  const bookkeeping = new Set<Promise<unknown>>();
   let disposal: Promise<void> | undefined;
   let disposed = false;
 
@@ -71,8 +72,8 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
     });
   }
 
-  async function binding(context: ToolContext): Promise<SessionBinding> {
-    if (disposed) throw new Error("OpenCode plugin instance is disposed");
+  async function binding(context: ToolContext, admitted = false): Promise<SessionBinding> {
+    if (disposed && !admitted) throw new Error("OpenCode plugin instance is disposed");
     const value = { cwd: context.directory, host: "opencode", sessionId: context.sessionID, generation };
     sessions.set(context.sessionID, value);
     // Reopen once per live instance, before registration I/O. Deletion/disposal must remain terminal within this instance.
@@ -82,6 +83,13 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
     }
     await opened.get(context.sessionID);
     return value;
+  }
+
+  async function withBookkeeping<T>(operation: () => Promise<T>): Promise<T> {
+    if (disposed) throw new Error("OpenCode plugin instance is disposed");
+    const pending = operation();
+    bookkeeping.add(pending);
+    try { return await pending; } finally { bookkeeping.delete(pending); }
   }
 
   async function closeSession(value: SessionBinding, permanent = false): Promise<void> {
@@ -152,7 +160,8 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
     },
     dispose: async () => {
       disposed = true;
-      if (!disposal) disposal = Promise.all([...sessions.values()].map(async value => { await closeSession(value); sessions.delete(value.sessionId); })).then(() => {}).catch(error => { disposal = undefined; throw error; });
+      // Authorized calls admitted before shutdown must finish enrollment/cancellation before the session snapshot.
+      if (!disposal) disposal = Promise.allSettled([...bookkeeping]).then(() => Promise.all([...sessions.values()].map(async value => { await closeSession(value); sessions.delete(value.sessionId); }))).then(() => {}).catch(error => { disposal = undefined; throw error; });
       await disposal;
     },
     event: async ({ event }) => {
@@ -184,17 +193,17 @@ async function createHooks(context: Parameters<PluginModule["server"]>[0]): Retu
       atexit_cancel: tool({
         description: "Cancel the returned registration ID without running its fallback. Before choosing this call, obtain a completed result proving that exact target is released or was never created. Sibling calls cannot supply this prerequisite; await and check cleanup inside orchestration or use a later response. Signal delivery, a closed port for a PID, and hidden inspection errors are not proof. Cleanup success counts only when every successful path guarantees release. Batch with remaining independent work, including other cleanup; standalone is valid when none remains. Claimed or running commands cannot be cancelled.",
         args: { registration_id: tool.schema.string().uuid() },
-        execute: async ({ registration_id }, context) => { await owned(registration_id, context); await binding(context); return JSON.stringify(await store.cancel(registration_id)); },
+        execute: async ({ registration_id }, context) => withBookkeeping(async () => { await owned(registration_id, context); await binding(context, true); return JSON.stringify(await store.cancel(registration_id)); }),
       }),
       atexit_list: tool({
         description: "Inspect atexit registrations by IDs previously returned to this session. Avoid spending a model turn only on registry bookkeeping when independent task work is ready.",
         args: { registration_ids: tool.schema.array(tool.schema.string().uuid()).min(1).max(100) },
-        execute: async ({ registration_ids }, context) => {
+        execute: async ({ registration_ids }, context) => withBookkeeping(async () => {
           const registrations = await Promise.all(registration_ids.map(id => owned(id, context)));
           // Resumed sessions can use existing IDs without registering anything new; disposal still needs to track them.
-          await binding(context);
+          await binding(context, true);
           return JSON.stringify({ registrations });
-        },
+        }),
       }),
     },
   });

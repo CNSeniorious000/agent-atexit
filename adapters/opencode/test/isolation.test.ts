@@ -46,19 +46,20 @@ test("fresh instance deletion recovers persisted bindings and closes registratio
 });
 
 test("resumed list and cancel enroll abandoned sessions for disposal without a new registration", async () => {
-  for (const operation of ["list", "cancel"]) {
+  for (const operation of ["list", "cancel"]) for (const concurrentDispose of [false, true]) {
     const f = await fixture();
     try {
-      const source = new URL("../../../packages/core/src/store.ts", import.meta.url).pathname;
+      const source = new URL("../../../packages/core/src/store.ts", import.meta.url).href;
       const code = `const { ActionStore } = await import(${JSON.stringify(source)}); const store = new ActionStore(${JSON.stringify(f.root)}), binding = ${JSON.stringify({ cwd: f.root, host: "opencode", sessionId: "resume", generation: "exited" })}; await store.openSession(binding); const ids = []; for (const argv of ${JSON.stringify([f.argv("first"), f.argv("remaining")])}) { const record = await store.register({argv}); await store.bind(record.id, binding); ids.push(record.id); } console.log(JSON.stringify(ids));`;
       const child = Bun.spawn([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
       const [output, errors, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       expect(errors).toBe(""); expect(exit).toBe(0);
       const ids = JSON.parse(output), hooks = await f.hooks(), context = f.context("resume"), store = new ActionStore(f.root);
-      if (operation === "list") await hooks.tool.atexit_list.execute({ registration_ids: ids }, context);
-      else await hooks.tool.atexit_cancel.execute({ registration_id: ids[0] }, context);
-      expect((await store.get(ids[1])).state).toBe("pending");
-      await hooks.dispose(); await f.wait("remaining");
+      const call = operation === "list" ? hooks.tool.atexit_list.execute({ registration_ids: ids }, context) : hooks.tool.atexit_cancel.execute({ registration_id: ids[0] }, context);
+      if (concurrentDispose) await Promise.all([call, hooks.dispose()]);
+      else { await call; expect((await store.get(ids[1])).state).toBe("pending"); await hooks.dispose(); }
+      await f.wait("remaining");
+      await expect(hooks.tool.atexit_list.execute({ registration_ids: ids }, context)).rejects.toThrow("disposed");
       if (operation === "list") await f.wait("first");
       else { expect((await store.get(ids[0])).state).toBe("cancelled"); expect(await Bun.file(join(f.root, "first")).exists()).toBe(false); }
     } finally { await f.close(); }
