@@ -17,6 +17,21 @@ afterEach(async () => {
 });
 
 describe("ActionStore", () => {
+  test("generation takeover fences delayed generationless bindings without invalidating duplicate starts", async () => {
+    for (const previous of ["absent", "legacy", "generation"]) {
+      const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "takeover" }, current = { ...binding, generation: "current" };
+      if (previous !== "absent") await store.openSession(previous === "legacy" ? binding : { ...binding, generation: "old" });
+      const stale = await store.register({ argv: ["echo", "stale"], key: "server" });
+      await store.openSession(current);
+      const registration = await store.register({ argv: ["echo", "current"], key: "server" });
+      await store.openSession(current);
+      expect((await store.bind(registration.id, current)).registration.state).toBe("pending");
+      expect((await store.bind(stale.id, binding)).lateRun?.actionIds).toEqual([stale.id]);
+      expect((await store.get(registration.id)).state).toBe("pending");
+      expect((await store.closeAndClaim(current))?.actionIds).toEqual([registration.id]);
+    }
+  });
+
   test("the current generation recovers legacy pending records without letting a stale owner drain them", async () => {
     const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "upgrade" };
     const legacy = await store.register({ argv: ["echo", "legacy"] });

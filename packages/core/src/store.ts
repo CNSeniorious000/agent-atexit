@@ -101,7 +101,8 @@ export class ActionStore {
       const session = await this.getSession(key);
       if (session?.deleted || (openOrder !== undefined && session?.openOrder !== undefined && openOrder < session.openOrder) || (session && !session.closedAt && (binding.generation === undefined || binding.generation === session.generation))) return;
       // SessionStart is the only reopen signal; register never revives a closed session. Duplicate starts are harmless.
-      await atomicWrite(this.sessionPath(key), { ...(binding.generation === undefined ? {} : { generation: binding.generation, openOrder }), ...(session?.closedAt ? { openedSequence: await this.nextSequence() } : {}), cwd: binding.cwd, host: binding.host, sessionKey: key });
+      // Generationless writers also need a sequence fence when a new owner takes over a live session.
+      await atomicWrite(this.sessionPath(key), { ...(binding.generation === undefined ? {} : { generation: binding.generation, openOrder }), ...(session?.closedAt || session?.generation !== binding.generation ? { openedSequence: await this.nextSequence() } : {}), cwd: binding.cwd, host: binding.host, sessionKey: key });
     });
   }
 
