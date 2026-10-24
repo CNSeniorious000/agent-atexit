@@ -8,12 +8,14 @@ export interface RegisterInput {
 }
 
 export interface SessionBinding {
+  generation?: string;
   cwd: string;
   host: string;
   sessionId: string;
 }
 
 export interface RegistrationRecord {
+  generation?: string;
   argv: [string, ...string[]];
   boundAt?: string;
   cancelledAt?: string;

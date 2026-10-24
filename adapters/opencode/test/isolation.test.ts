@@ -83,3 +83,85 @@ test("deletion while registration waits for permission cannot be undone by reope
     proceed.resolve(); await registration; await f.wait("raced");
   } finally { if (saved === undefined) delete process.env.AGENT_ATEXIT_ASK; else process.env.AGENT_ATEXIT_ASK = saved; await f.close(); }
 });
+
+test("old permission waiter cannot replace resumed cleanup with the same key", async () => {
+  const f = await fixture(), saved = process.env.AGENT_ATEXIT_ASK;
+  try {
+    const old = await f.hooks(), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    process.env.AGENT_ATEXIT_ASK = "1";
+    const stale = old.tool.atexit_register.execute({ argv: f.argv("stale-waiter"), key: "shared" }, { ...f.context("resume"), async ask() { entered.resolve(); await release.promise; } });
+    await entered.promise; await old.dispose(); delete process.env.AGENT_ATEXIT_ASK;
+    const resumed = await f.hooks();
+    const fresh = JSON.parse(await resumed.tool.atexit_register.execute({ argv: f.argv("fresh-waiter"), key: "shared" }, f.context("resume")));
+    release.resolve(); await stale; await f.wait("stale-waiter");
+    expect((await new ActionStore(f.root).get(fresh.registration_id)).state).toBe("pending");
+    expect(await Bun.file(join(f.root, "fresh-waiter")).exists()).toBe(false);
+    await resumed.dispose(); await f.wait("fresh-waiter");
+  } finally { if (saved === undefined) delete process.env.AGENT_ATEXIT_ASK; else process.env.AGENT_ATEXIT_ASK = saved; await f.close(); }
+});
+
+test("overlapping instance lifetimes drain only their own generation", async () => {
+  const f = await fixture();
+  try {
+    const old = await f.hooks(), resumed = await f.hooks();
+    await old.tool.atexit_register.execute({ argv: f.argv("old-overlap") }, f.context("same"));
+    const fresh = JSON.parse(await resumed.tool.atexit_register.execute({ argv: f.argv("new-overlap") }, f.context("same")));
+    await old.dispose(); await f.wait("old-overlap");
+    expect((await new ActionStore(f.root).get(fresh.registration_id)).state).toBe("pending");
+    expect(await Bun.file(join(f.root, "new-overlap")).exists()).toBe(false);
+    await resumed.dispose(); await f.wait("new-overlap");
+  } finally { await f.close(); }
+});
+
+test("failed opens and failed disposal can retry after filesystem recovery", async () => {
+  const f = await fixture();
+  const { rename, writeFile } = await import("node:fs/promises");
+  const breakSessions = async () => { await rename(join(f.root, "sessions"), join(f.root, "saved-sessions")); await writeFile(join(f.root, "sessions"), "blocked"); };
+  const restore = async () => { await rm(join(f.root, "sessions")); await rename(join(f.root, "saved-sessions"), join(f.root, "sessions")); };
+  try {
+    await new ActionStore(f.root).init(); const hooks = await f.hooks();
+    await breakSessions();
+    await expect(hooks.tool.atexit_register.execute({ argv: f.argv("retry") }, f.context("retry"))).rejects.toThrow();
+    await restore();
+    await hooks.tool.atexit_register.execute({ argv: f.argv("retry") }, f.context("retry"));
+    await breakSessions(); await expect(hooks.dispose()).rejects.toThrow(); await restore();
+    await hooks.dispose(); await f.wait("retry");
+  } finally { await f.close(); }
+});
+
+test("concurrent disposal callers await the same close", async () => {
+  const f = await fixture();
+  const { mkdir } = await import("node:fs/promises");
+  const { sessionKey } = await import("../../../packages/core/src/index.ts");
+  try {
+    const hooks = await f.hooks(); await hooks.tool.atexit_register.execute({ argv: f.argv("concurrent") }, f.context("same"));
+    const lock = join(f.root, "locks", "session-" + sessionKey("opencode", "same")); await mkdir(lock);
+    const first = hooks.dispose(); let returned = false;
+    const second = hooks.dispose().then(() => { returned = true; });
+    await Bun.sleep(50); expect(returned).toBe(false); await rm(lock, { recursive: true });
+    await Promise.all([first, second]); await f.wait("concurrent");
+  } finally { await f.close(); }
+});
+
+test("deletion drains persisted cleanup even when the new instance's open failed", async () => {
+  const f = await fixture(), { rename, writeFile } = await import("node:fs/promises");
+  try {
+    const old = await f.hooks(); await old.tool.atexit_register.execute({ argv: f.argv("persisted-after-failure") }, f.context("same"));
+    const fresh = await f.hooks();
+    await rename(join(f.root, "sessions"), join(f.root, "saved-sessions")); await writeFile(join(f.root, "sessions"), "blocked");
+    await expect(fresh.tool.atexit_register.execute({ argv: f.argv("unregistered") }, f.context("same"))).rejects.toThrow();
+    await rm(join(f.root, "sessions")); await rename(join(f.root, "saved-sessions"), join(f.root, "sessions"));
+    await fresh.event({ event: { type: "session.deleted", properties: { info: { id: "same" } } } });
+    await f.wait("persisted-after-failure");
+  } finally { await f.close(); }
+});
+
+test("permanent deletion remains terminal in a fresh instance without an in-memory deleted set", async () => {
+  const f = await fixture();
+  try {
+    const first = await f.hooks(); await first.event({ event: { type: "session.deleted", properties: { info: { id: "gone" } } } });
+    const fresh = await f.hooks();
+    const result = JSON.parse(await fresh.tool.atexit_register.execute({ argv: f.argv("deleted") }, f.context("gone")));
+    expect(result.state).toBe("claimed"); await f.wait("deleted");
+  } finally { await f.close(); }
+});
