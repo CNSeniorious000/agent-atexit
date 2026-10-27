@@ -73,13 +73,28 @@ Kimi installs plugins per user. The adapter stores state under `$KIMI_CODE_HOME/
 
 ### OpenCode
 
-The npm package is built but will not be published before explicit registry authorization. From a checkout:
+Native v2 loads plugins from the `plugins` array in the user config file, `~/.config/opencode/opencode.json`. Build the adapter, then point the entry at the emitted directory:
+
+```bash
+bun run build
+```
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["/absolute/path/to/agent-atexit/adapters/opencode/dist"]
+}
+```
+
+Use an absolute path: the config file lives outside the checkout. The entry must name a directory that contains `server.js` or `index.js` directly; native v2 does not read the package `exports` map, so `adapters/opencode` instead of `adapters/opencode/dist` loads nothing and reports nothing. Reload or restart OpenCode so it rereads the config, confirm the loaded source with `opencode plugin list`, then start a new session, because an existing session keeps the tool schema it was created with.
+
+OpenCode v1 (1.18.27+) still takes the checkout path through its own CLI:
 
 ```bash
 opencode plugin ./adapters/opencode -g
 ```
 
-After registry publication, the stable form will be `opencode plugin @agent-atexit/opencode@0.2.3 -g`. Registration is immediate by default; set `AGENT_ATEXIT_ASK=1` to ask through OpenCode's permission system before each registration.
+The npm package is built but will not be published before explicit registry authorization. After publication, `opencode plugin add @agent-atexit/opencode@0.2.3` installs it from the registry. Registration is immediate by default; set `AGENT_ATEXIT_ASK=1` to ask through OpenCode's permission system before each registration.
 
 ### dsh
 
