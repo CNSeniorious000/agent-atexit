@@ -6,7 +6,7 @@ OpenCode adapter for [agent-atexit](https://github.com/CNSeniorious000/agent-ate
 
 The same package supports OpenCode v1 (1.18.27+) and native v2 (verified on 2.1.4). The `/server` export provides both lifecycle interfaces. For a local build, v1 loads `dist/server.js` through `plugin`, while v2 loads the `dist` directory through `plugins`. Both expose register/list/cancel tools, optional permission checks, and cleanup on instance disposal or permanent session deletion. V2 injects cleanup guidance into the system context; the legacy message timing and shell-result enrichments remain v1-only.
 
-V2 resolves a path entry literally: the configured directory must contain `server.js` or `index.js` at its top level, and the package `exports` map is ignored. Pointing `plugins` at the package root therefore loads no tools and logs no warning, so use `adapters/opencode/dist` and verify with `opencode plugin list`. Existing sessions keep the tool schema they were created with; start a new one after changing the entry.
+V2 resolves a path entry literally: the configured directory must contain `server.js` or `index.js` at its top level, and the package `exports` map is ignored. Pointing `plugins` at the package root therefore loads no tools and logs no warning, so set `adapters/opencode/dist` in `~/.config/opencode/opencode.json` and verify with `opencode plugin list`. Reload or restart OpenCode to reread the config, then start a new session: existing sessions keep the tool schema they were created with.
 
 A raw SIGTERM of v1 `opencode serve` does not reliably invoke plugin disposal. Embedders must dispose the instance through the native API (or delete the session) before terminating the server. Hard termination is not a cleanup guarantee.
 
