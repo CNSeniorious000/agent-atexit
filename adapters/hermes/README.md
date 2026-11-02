@@ -24,4 +24,6 @@ The shared skill and tool descriptions provide the cleanup rules. Hermes 0.21.4'
 
 The MCP command selects `--hermes` metadata for compatibility, but Hermes 0.21.4 does not pass `initialize.instructions` to the model. Those server instructions are not the guidance delivery path for this setup.
 
-The latest Hermes end-to-end smoke tests used locally modified checkouts. Those results do not validate triggering or batching on an unmodified Hermes installation. Native skill loading and hook contracts alone do not establish reliable model behavior.
+An unmodified Hermes 0.22.5 stable installation passed a native smoke test in a temporary Docker container: `hermes chat --oneshot --query-file prompt.txt --accept-hooks` registered cleanup through the native `tool_call` bridge, bound it through `post_tool_call`, and executed it on `on_session_finalize`. The registration reached `succeeded` and the cleanup marker was verified. Hermes 0.22.5 routes deferred MCP calls through `tool_call`; sending the deferred MCP name directly as a model function call was rejected.
+
+The smoke test used a scripted local model provider. It validates native dispatch and lifecycle integration, not reliable model triggering or batching; earlier tests with locally modified checkouts do not establish those properties either.
