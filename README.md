@@ -19,7 +19,7 @@ The core persists registrations before returning success, binds them to the host
 | --- | --- | --- | --- |
 | Claude Code | bundled MCP server | `SessionEnd` | Clean session exits; plugin hook budget is short |
 | Codex | bundled MCP server | `SessionEnd` | Root-thread close/archive/delete or Codex's idle unload |
-| Kimi Code | bundled MCP server | `SessionEnd` | `exit` and `archive`; `SIGHUP` emergency exit can bypass cleanup |
+| Kimi Code | bundled MCP server | `SessionEnd` | TUI `exit` and `archive`; `kimi -p` (2.3.1) emits no `SessionEnd`: clean up explicitly, verify release, then cancel by registration ID; `SIGHUP` can bypass cleanup |
 | OpenCode | native plugin tools | plugin `dispose` and `session.deleted` | Instance unload and permanent session deletion, not a logical session-close event |
 | dsh | native `ctx.tools` tools | workspace archive or per-agent `ctx.effect` disposer | Web archive and Agent teardown; whole-process teardown has a five-second grace |
 | Hermes (experimental) | bundled MCP server and shell hooks | `on_session_finalize` | Chat session shutdown/reset; top-level `-z` does not emit this hook in 0.21.3 |
