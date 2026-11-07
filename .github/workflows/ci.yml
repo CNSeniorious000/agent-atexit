@@ -26,3 +26,34 @@ jobs:
             artifacts/agent-atexit-kimi.zip
             artifacts/agent-atexit-opencode-*.tgz
             artifacts/agent-atexit-dsh-*.tgz
+
+  dsh:
+    name: DSH ${{ matrix.dsh }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dsh: 0.2.1-rc.2
+            cordis: 4.0.5
+          - dsh: 0.2.2-rc.1
+            cordis: 4.1.0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install matching host packages
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
+          CORDIS_VERSION: ${{ matrix.cordis }}
+        run: |
+          bun -e 'const p = await Bun.file("package.json").json(); for (const name of Object.keys(p.devDependencies)) if (name.startsWith("@deepseek-ai/dsh-")) p.devDependencies[name] = process.env.DSH_VERSION; p.devDependencies["@deepseek-ai/cordis"] = process.env.CORDIS_VERSION; await Bun.write("package.json", JSON.stringify(p, null, 2) + "\n")'
+          rm bun.lock
+          bun install --ignore-scripts
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun test adapters/dsh/test/
