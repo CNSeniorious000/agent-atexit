@@ -27,16 +27,13 @@ function findRegistrationIds(value: unknown, found = new Set<string>()): string[
   if (typeof value === "string") {
     try {
       findRegistrationIds(JSON.parse(value), found);
-    } catch {
-      for (const match of value.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi)) found.add(match[0]);
-    }
+    } catch { /* 非 JSON 文本不是注册结果，不能从中猜测归属。 */ }
   } else if (Array.isArray(value)) {
     for (const item of value) findRegistrationIds(item, found);
   } else if (value && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) {
-      if ((key === "registration_id" || key === "registrationId") && typeof item === "string") found.add(item);
-      else findRegistrationIds(item, found);
-    }
+    const result = value as Record<string, unknown>, id = result.registration_id ?? result.registrationId;
+    if (typeof id === "string") found.add(id);
+    else for (const key of ["structuredContent", "content", "text"]) findRegistrationIds(result[key], found);
   }
   return [...found];
 }
@@ -69,7 +66,8 @@ async function main(): Promise<void> {
     }
     return;
   }
-  if ((input.hook_event_name === "PostToolUse" || input.hook_event_name === "post_tool_call") && input.tool_name === "Bash") return;
+  const postTool = input.hook_event_name === "PostToolUse" || input.hook_event_name === "post_tool_call";
+  if (postTool && !["mcp__atexit__atexit_register", "mcp__plugin_atexit_atexit__atexit_register", "mcp__plugin-atexit_atexit__atexit_register"].includes(input.tool_name ?? "")) return;
   // Codex's legacy bundled-MCP format resolves cwd but does not expose PLUGIN_DATA to the server. Ignore the hook-only compatibility variables so both sides use the XDG state fallback.
   const root = host === "codex" ? resolveStateRoot({ ...process.env, CLAUDE_PLUGIN_DATA: undefined, PLUGIN_DATA: undefined }) : resolveStateRoot();
   const store = new ActionStore(root);
@@ -78,9 +76,14 @@ async function main(): Promise<void> {
     await store.openSession(binding);
     return;
   }
-  if (input.hook_event_name === "PostToolUse" || input.hook_event_name === "post_tool_call") {
+  if (postTool) {
     for (const id of findRegistrationIds(input.tool_response ?? input.tool_output ?? input.extra?.result)) {
-      const result = await store.bind(id, binding).catch(() => undefined);
+      const result = await store.bind(id, binding).catch((error: unknown) => {
+        if (error && typeof error === "object" && "code" in error && error.code === "REGISTRATION_NOT_FOUND") return;
+        const reason = error instanceof SyntaxError ? "invalid JSON in cleanup state" : error instanceof Error ? error.message : String(error);
+        console.error(`atexit binding failed: ${host} session=${JSON.stringify(input.session_id)} registration=${id}: ${reason}`);
+        process.exitCode = 1;
+      });
       if (result?.lateRun) await startRun(root, result.lateRun);
     }
     return;

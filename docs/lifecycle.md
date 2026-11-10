@@ -18,6 +18,12 @@ provisional -> pending -> claimed -> running -> succeeded | failed
 
 Session and registration locks under `locks/` do not expire: directory age cannot distinguish a crashed owner from a paused one. Contention fails after two seconds rather than allowing overlapping owners. After a crash, stop **all** processes using the state directory before removing a confirmed abandoned directory under `locks/`; never remove it while a writer may still be active. Do not remove persistent run locks under `runs/`, which prevent replaying commands. Stop older plugin processes before upgrading: older writers can still evict locks based on age.
 
+## MCP binding failures
+
+Only recognized `atexit_register` tool results establish ownership; UUIDs in unrelated output or command arguments do not. Binding failures produce a nonzero hook exit and a stderr diagnostic with the host, session and registration ID. A missing target record is skipped, but write failures (including `ENOENT`) are reported.
+
+Registration success means the provisional record was persisted, not that the hook bound it. If the host omits the post-tool event or does not trust the hook, cleanup remains unbound and cannot safely run at session exit. The MCP server and hook must use the same state directory; a missing record alone cannot distinguish a different directory from a deleted record. Inspect the registration state and host hook diagnostics rather than assuming binding succeeded.
+
 ## Isolation
 
 Raw session IDs are hashed together with the host name before they become storage keys. List requires explicit registration IDs, which are random capabilities, so one session cannot enumerate another session's command lines.

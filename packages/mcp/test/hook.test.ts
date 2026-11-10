@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionStore } from "@agent-atexit/core";
@@ -23,11 +23,64 @@ async function runHook(root: string, input: unknown, env: NodeJS.ProcessEnv = {}
   child.stderr.on("data", (chunk: string) => { stderr += chunk; });
   child.stdin.end(JSON.stringify(input));
   const [code] = (await once(child, "close")) as [number | null];
-  if (code !== 0) throw new Error(`hook exited ${String(code)}: ${stderr}`);
+  if (code !== 0) {
+    expect(stdout).toBe("");
+    throw new Error(`hook exited ${String(code)}: ${stderr}`);
+  }
+  expect(stderr).toBe("");
   return stdout;
 }
 
 describe("portable lifecycle hook", () => {
+  for (const failure of ["corrupt record", "lock timeout", "write ENOENT"]) {
+    test(`reports binding failures: ${failure}`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "agent-atexit-bind-error-")); roots.push(root);
+      const store = new ActionStore(root), registration = await store.register({ argv: ["echo", "private-command"] }), path = join(root, "records", `${registration.id}.json`);
+      const env: NodeJS.ProcessEnv = { PLUGIN_ROOT: undefined };
+      if (failure === "corrupt record") await writeFile(path, "s3cr3t");
+      if (failure === "lock timeout") await mkdir(join(root, "locks", `record-${registration.id}`));
+      if (failure === "write ENOENT") {
+        const preload = join(root, "rename-error.cjs");
+        await writeFile(preload, `const fs = require('node:fs/promises'), rename = fs.rename; fs.rename = async (from, to) => { if (to === ${JSON.stringify(path)}) throw Object.assign(new Error('binding write ENOENT'), { code: 'ENOENT' }); return rename(from, to); }; require('node:module').syncBuiltinESMExports();`);
+        env.NODE_OPTIONS = `--require=${preload}`;
+      }
+      const hook = runHook(root, { cwd: root, session_id: "failed-bind", hook_event_name: "PostToolUse", tool_name: "mcp__atexit__atexit_register", tool_response: { registration_id: registration.id } }, env);
+      await expect(hook).rejects.toThrow(new RegExp(`claude-code.*failed-bind.*${registration.id}`));
+      await expect(hook).rejects.toThrow(failure === "corrupt record" ? "JSON" : failure === "lock timeout" ? "timed out waiting for lock" : "binding write ENOENT");
+      await expect(hook).rejects.not.toThrow("s3cr3t");
+      if (failure !== "corrupt record") expect((await store.get(registration.id)).state).toBe("provisional");
+    });
+  }
+
+  test("binds supported registration results without scanning command arguments", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-bind-result-")); roots.push(root);
+    const store = new ActionStore(root), unrelated = await store.register({ argv: ["echo", "unrelated"] });
+    const names = ["mcp__atexit__atexit_register", "mcp__plugin_atexit_atexit__atexit_register", "mcp__plugin-atexit_atexit__atexit_register"];
+    for (const tool_name of names) {
+      const registration = await store.register({ argv: ["echo", unrelated.id] });
+      const result = { registration_id: registration.id, argv: [unrelated.id, JSON.stringify({ registration_id: unrelated.id })] };
+      const response = { structuredContent: result, content: [{ type: "text", text: JSON.stringify(result) }] };
+      await runHook(root, { cwd: root, session_id: "result-session", hook_event_name: "PostToolUse", tool_name, tool_response: response });
+      expect((await store.get(registration.id)).state).toBe("pending");
+      for (const operation of ["list", "cancel"]) {
+        await runHook(root, { cwd: root, session_id: "other-session", hook_event_name: "PostToolUse", tool_name: tool_name.replace(/register$/, operation), tool_response: { registration_id: unrelated.id } });
+      }
+    }
+    const text = await store.register({ argv: ["echo", "text-only"] });
+    await runHook(root, { cwd: root, session_id: "result-session", hook_event_name: "PostToolUse", tool_name: names[0], tool_response: { content: [{ type: "text", text: JSON.stringify({ registrationId: text.id }) }] } });
+    expect((await store.get(text.id)).state).toBe("pending");
+    await runHook(root, { cwd: root, session_id: "other-session", hook_event_name: "PostToolUse", tool_name: "Read", tool_response: { registration_id: unrelated.id } });
+    await runHook(root, { cwd: root, session_id: "result-session", hook_event_name: "PostToolUse", tool_name: names[0], tool_response: `not a registration: ${unrelated.id}` });
+    expect((await store.get(unrelated.id)).state).toBe("provisional");
+  });
+
+  test("quietly skips a registration record that no longer exists", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-bind-missing-")); roots.push(root);
+    const store = new ActionStore(root), registration = await store.register({ argv: ["echo", "removed"] });
+    await rm(join(root, "records", `${registration.id}.json`));
+    expect(await runHook(root, { cwd: root, session_id: "missing-session", hook_event_name: "PostToolUse", tool_name: "mcp__atexit__atexit_register", tool_response: { registration_id: registration.id } })).toBe("");
+  });
+
   test("adds batch guidance without binding UUIDs from tool results", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-guidance-")); roots.push(root);
     const store = new ActionStore(root), registration = await store.register({ argv: ["echo", "unrelated"] });
@@ -65,7 +118,7 @@ describe("portable lifecycle hook", () => {
     roots.push(root);
     const store = new ActionStore(root);
     const registration = await store.register({ argv: ["echo", "wrong session"] });
-    await runHook(root, { cwd: root, hook_event_name: "PostToolUse", session_id: "session-a", tool_response: { registration_id: registration.id } });
+    await runHook(root, { cwd: root, hook_event_name: "PostToolUse", session_id: "session-a", tool_name: "mcp__atexit__atexit_register", tool_response: { registration_id: registration.id } });
     await runHook(root, { cwd: root, hook_event_name: "SessionEnd", reason: "other", session_id: "session-b" });
     expect((await store.get(registration.id)).state).toBe("pending");
   });
@@ -104,7 +157,7 @@ describe("portable lifecycle hook", () => {
     for (const agent of ["root", "child"]) {
       const registration = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(agent + "\n")})`] });
       registrations.push(registration);
-      await runHook(root, { ...common, agent_id: agent, hook_event_name: "PostToolUse", tool_response: { registration_id: registration.id } });
+      await runHook(root, { ...common, agent_id: agent, hook_event_name: "PostToolUse", tool_name: "mcp__atexit__atexit_register", tool_response: { registration_id: registration.id } });
       expect((await store.get(registration.id)).state).toBe("pending");
     }
     await runHook(root, { ...common, hook_event_name: "SessionStart", source: "compact" });
@@ -122,7 +175,7 @@ describe("portable lifecycle hook", () => {
       await runHook(root, { ...common, hook_event_name: "SessionStart", source: resumed ? "resume" : "startup" });
       const registration = await store.register({ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(" + JSON.stringify(output) + ", 'closed')"] });
       delete registration.createdSequence; await store.writeRegistration(registration);
-      await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_response: { registration_id: registration.id } });
+      await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_name: "mcp__atexit__atexit_register", tool_response: { registration_id: registration.id } });
       expect((await store.get(registration.id)).state).toBe("pending");
       expect(await readFile(output, "utf8").catch(() => undefined)).toBeUndefined();
       await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
@@ -138,8 +191,8 @@ describe("portable lifecycle hook", () => {
     await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
     await runHook(root, { ...common, hook_event_name: "SessionStart", source: "resume" });
     const current = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'current\\n')`], key: "server" });
-    await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_response: { registration_id: current.id } });
-    await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_response: { registration_id: old.id } });
+    await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_name: "mcp__atexit__atexit_register", tool_response: { registration_id: current.id } });
+    await runHook(root, { ...common, hook_event_name: "PostToolUse", tool_name: "mcp__atexit__atexit_register", tool_response: { registration_id: old.id } });
     expect(await readFile(output, "utf8")).toBe("old\n");
     expect((await store.get(current.id)).state).toBe("pending");
     await runHook(root, { ...common, hook_event_name: "SessionEnd", reason: "other" });
