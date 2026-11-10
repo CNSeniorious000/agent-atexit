@@ -84,6 +84,30 @@ describe("dsh adapter", () => {
     expect(await waitForFile(output)).toBe("done");
   });
 
+  test("reopens a resumed session before accepting new registrations", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-dsh-resume-")); roots.push(root);
+    process.env.AGENT_ATEXIT_STATE_DIR = root;
+    const plugin = await import(pathToFileURL(resolve(import.meta.dirname, "../dist/index.js")).href);
+    const tools = new Map<string, any>(), listeners = new Map<string, (...args: any[]) => unknown>();
+    plugin.apply({ inject: () => undefined, on: (event: string, callback: (...args: any[]) => unknown) => listeners.set(event, callback), tools: { register: (tool: any) => tools.set(tool.name, tool) } });
+    let disposer!: () => Promise<void>;
+    const createAgent = () => ({ ctx: { effect: (setup: () => () => Promise<void>) => { disposer = setup(); } }, session: { id: "resumed-session", header: { cwd: root } } });
+    const register = (agent: ReturnType<typeof createAgent>, output: string) => tools.get("atexit_register").execute({ argv: ["node", "-e", `require('node:fs').writeFileSync(${JSON.stringify(output)}, 'done')`] }, { agent });
+    const first = createAgent(), firstOutput = join(root, "first.txt");
+    await listeners.get("agent/created")?.({ agent: first, source: "startup" });
+    await register(first, firstOutput);
+    await disposer();
+    expect(await waitForFile(firstOutput)).toBe("done");
+    const resumed = createAgent(), secondOutput = join(root, "second.txt");
+    await listeners.get("agent/created")?.({ agent: resumed, source: "resume" });
+    const result = await register(resumed, secondOutput);
+    if (result.state !== "pending") await waitForFile(secondOutput);
+    expect(result.state).toBe("pending");
+    expect(await readFile(secondOutput, "utf8").catch(() => undefined)).toBeUndefined();
+    await disposer();
+    expect(await waitForFile(secondOutput)).toBe("done");
+  });
+
   test("can ask before registering when configured", async () => {
     const url = pathToFileURL(resolve(import.meta.dirname, "../dist/index.js"));
     url.searchParams.set("test", crypto.randomUUID());
