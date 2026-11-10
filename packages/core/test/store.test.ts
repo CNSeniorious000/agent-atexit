@@ -17,6 +17,30 @@ afterEach(async () => {
 });
 
 describe("ActionStore", () => {
+  test("does not evict a live lock owner based on directory age", async () => {
+    const { root, store } = await makeStore(); await store.init();
+    const internals = store as unknown as { withLock: <T>(name: string, operation: () => Promise<T>) => Promise<T> };
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), path = join(root, "locks", "long-operation");
+    const owner = internals.withLock("long-operation", async () => { entered.resolve(); await release.promise; });
+    try {
+      await entered.promise;
+      const old = new Date(Date.now() - 60_000); await utimes(path, old, old);
+      await expect(internals.withLock("long-operation", async () => "overlap")).rejects.toThrow("timed out waiting for lock");
+      expect(await readdir(join(root, "locks"))).toEqual(["long-operation"]);
+    } finally { release.resolve(); await owner; }
+    expect(await internals.withLock("long-operation", async () => "successor")).toBe("successor");
+    expect(await readdir(join(root, "locks"))).toEqual([]);
+  });
+
+  test("leaves old locks with unknown owners untouched", async () => {
+    const { root, store } = await makeStore(); await store.init();
+    const registration = await store.register({ argv: ["echo", "pending"] }), path = join(root, "locks", `record-${registration.id}`);
+    await mkdir(path); const old = new Date(Date.now() - 60_000); await utimes(path, old, old);
+    await expect(store.cancel(registration.id)).rejects.toThrow("timed out waiting for lock");
+    expect((await store.get(registration.id)).state).toBe("provisional");
+    expect(await readdir(join(root, "locks"))).toEqual([`record-${registration.id}`]);
+  });
+
   test("lists and claims by registration sequence when timestamps tie or the clock moves backward", async () => {
     for (const secondTime of ["2026-01-02T00:00:00.000Z", "2026-01-01T00:00:00.000Z"]) {
       const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "ordered" };

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -8,7 +8,6 @@ import type { BindResult, CancelResult, RegisterInput, RegistrationRecord, RunRe
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
-const LOCK_STALE_MS = 10_000;
 
 interface SessionRecord {
   generation?: string;
@@ -259,11 +258,7 @@ export class ActionStore {
         break;
       } catch (error) {
         if (errorCode(error) !== "EEXIST") throw error;
-        const info = await stat(path).catch(() => undefined);
-        if (info && Date.now() - info.mtimeMs > LOCK_STALE_MS) {
-          await rm(path, { force: true, recursive: true });
-          continue;
-        }
+        // 锁的年龄不能证明持有者已退出；驱逐活锁会破坏 at-most-once。
         if (Date.now() - startedAt > 2_000) throw new Error(`timed out waiting for lock: ${name}`);
         await delay(10);
       }
