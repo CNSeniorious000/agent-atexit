@@ -27,6 +27,25 @@ jobs:
             artifacts/agent-atexit-opencode-*.tgz
             artifacts/agent-atexit-dsh-*.tgz
 
+  node:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 24]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bun test packages/mcp/test/server.test.ts packages/mcp/test/hook.test.ts
+
   dsh:
     name: DSH ${{ matrix.dsh }}
     runs-on: ubuntu-latest
