@@ -23,8 +23,7 @@ async function executeRegistration(store: ActionStore, registration: Registratio
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       });
     }, registration.timeoutMs);
-    const [exitCode, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
-    clearTimeout(timer);
+    const [exitCode, signal] = (await once(child, "exit").finally(() => clearTimeout(timer))) as [number | null, NodeJS.Signals | null];
     const completedAt = new Date().toISOString();
     const succeeded = !timedOut && exitCode === 0;
     running = { ...running, completedAt, exitCode, state: succeeded ? "succeeded" : "failed", ...(succeeded ? {} : { error: timedOut ? `timed out after ${registration.timeoutMs}ms` : signal ? `terminated by ${signal}` : `exited with code ${String(exitCode)}` }) };
