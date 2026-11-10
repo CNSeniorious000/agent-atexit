@@ -44,6 +44,12 @@ function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : undefined;
 }
 
+function sortRegistrations(registrations: RegistrationRecord[]): RegistrationRecord[] {
+  // 旧 writer 的序号不可比较；整组回退，避免逐对回退破坏比较器的传递性。
+  const sequenced = registrations.every((registration) => registration.createdSequence !== undefined);
+  return registrations.sort((left, right) => (sequenced ? right.createdSequence! - left.createdSequence! : 0) || right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+}
+
 function abandonedGeneration(registration: RegistrationRecord): boolean {
   const owner = registration.generationOwner;
   // PID reuse, remote hosts, and permission errors are ambiguous: never drain a possibly live owner.
@@ -161,7 +167,7 @@ export class ActionStore {
     await this.init();
     const selected = ids ?? (await readdir(join(this.root, "records"))).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5));
     const registrations = await Promise.all(selected.map(async (id) => this.get(id).catch(() => undefined)));
-    return registrations.filter((registration): registration is RegistrationRecord => registration !== undefined).toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return sortRegistrations(registrations.filter((registration): registration is RegistrationRecord => registration !== undefined));
   }
 
   async getRun(id: string): Promise<RunRecord> {
@@ -200,7 +206,7 @@ export class ActionStore {
   }
 
   private async claimPendingLocked(key: string, host: string, onlyId?: string, generation?: string, recoverOrphans = false): Promise<RunRecord | undefined> {
-    const pending = (await this.list()).filter((registration) => registration.sessionKey === key && registration.state === "pending" && (generation === undefined || registration.generation === generation || (recoverOrphans && (registration.generation === undefined || abandonedGeneration(registration)))) && (onlyId === undefined || registration.id === onlyId)).toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+    const pending = sortRegistrations((await this.list()).filter((registration) => registration.sessionKey === key && registration.state === "pending" && (generation === undefined || registration.generation === generation || (recoverOrphans && (registration.generation === undefined || abandonedGeneration(registration)))) && (onlyId === undefined || registration.id === onlyId)));
     if (pending.length === 0) return undefined;
     const now = new Date().toISOString();
     const run: RunRecord = { actionIds: pending.map((registration) => registration.id), createdAt: now, host, id: randomUUID(), sessionKey: key, state: "claimed" };

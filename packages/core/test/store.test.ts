@@ -17,6 +17,46 @@ afterEach(async () => {
 });
 
 describe("ActionStore", () => {
+  test("lists and claims by registration sequence when timestamps tie or the clock moves backward", async () => {
+    for (const secondTime of ["2026-01-02T00:00:00.000Z", "2026-01-01T00:00:00.000Z"]) {
+      const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "ordered" };
+      await store.init();
+      const first = { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", createdAt: "2026-01-02T00:00:00.000Z", createdSequence: 1, argv: ["echo", "first"] as [string, ...string[]], state: "provisional" as const, timeoutMs: 1_000 };
+      const second = { ...first, id: "00000000-0000-4000-8000-000000000000", createdAt: secondTime, createdSequence: 2, argv: ["echo", "second"] as [string, ...string[]] };
+      await store.writeRegistration(first); await store.writeRegistration(second);
+      await store.bind(first.id, binding); await store.bind(second.id, binding);
+      expect((await store.list()).map(({ id }) => id)).toEqual([second.id, first.id]);
+      const { createdSequence, ...unrelated } = await store.register({ argv: ["echo", "unrelated"] });
+      await store.writeRegistration(unrelated);
+      await store.bind(unrelated.id, { ...binding, sessionId: "other" });
+      expect((await store.closeAndClaim(binding))?.actionIds).toEqual([second.id, first.id]);
+    }
+  });
+
+  test("keeps timestamp ordering for legacy records without registration sequences", async () => {
+    const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "legacy-order" };
+    const { createdSequence: firstSequence, ...first } = await store.register({ argv: ["echo", "first"] });
+    const { createdSequence: secondSequence, ...second } = await store.register({ argv: ["echo", "second"] });
+    await store.writeRegistration({ ...first, createdAt: "2026-01-01T00:00:00.000Z" });
+    await store.writeRegistration({ ...second, createdAt: "2026-01-02T00:00:00.000Z" });
+    await store.bind(first.id, binding); await store.bind(second.id, binding);
+    expect((await store.closeAndClaim(binding))?.actionIds).toEqual([second.id, first.id]);
+  });
+
+  test("keeps timestamp ordering when legacy and current writers share a session", async () => {
+    for (const legacyTime of ["2026-01-01T00:00:00.000Z", "2026-01-03T00:00:00.000Z"]) {
+      const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "mixed-order" };
+      const current = await store.register({ argv: ["echo", "current"] });
+      const { createdSequence, ...legacy } = await store.register({ argv: ["echo", "legacy"] });
+      await store.writeRegistration({ ...current, createdAt: "2026-01-02T00:00:00.000Z" });
+      await store.writeRegistration({ ...legacy, createdAt: legacyTime });
+      await store.bind(current.id, binding); await store.bind(legacy.id, binding);
+      const expected = legacyTime > "2026-01-02T00:00:00.000Z" ? [legacy.id, current.id] : [current.id, legacy.id];
+      expect((await store.list()).map(({ id }) => id)).toEqual(expected);
+      expect((await store.closeAndClaim(binding))?.actionIds).toEqual(expected);
+    }
+  });
+
   test("resume recovers a killed owner's pending cleanup while preserving live owners and at-most-once execution", async () => {
     const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "crashed" }, output = join(root, "executed.txt");
     const source = new URL("../src/store.ts", import.meta.url).pathname;
