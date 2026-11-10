@@ -45,7 +45,7 @@ jobs:
           bun-version: 1.4.4
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
       - name: Install matching host packages
         env:
           DSH_VERSION: ${{ matrix.dsh }}
