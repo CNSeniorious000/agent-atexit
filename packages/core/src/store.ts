@@ -157,7 +157,7 @@ export class ActionStore {
     try {
       return await readJson<RegistrationRecord>(this.recordPath(id));
     } catch (error) {
-      if (errorCode(error) === "ENOENT") throw new Error(`unknown registration: ${id}`);
+      if (errorCode(error) === "ENOENT") throw Object.assign(new Error(`unknown registration: ${id}`), { code: "REGISTRATION_NOT_FOUND" });
       throw error;
     }
   }
