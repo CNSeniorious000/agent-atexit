@@ -2,6 +2,7 @@ import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { finished } from "node:stream/promises";
 import { ActionStore } from "./store.ts";
 import type { ExecuteRunResult, RegistrationRecord } from "./types.ts";
 
@@ -10,11 +11,19 @@ async function executeRegistration(store: ActionStore, registration: Registratio
   let running: RegistrationRecord = { ...registration, startedAt, state: "running" };
   await store.writeRegistration(running);
   const log = createWriteStream(store.logPath(registration.id), { flags: "a", mode: 0o600 });
-  log.write(`[${startedAt}] ${JSON.stringify(registration.argv)}\n`);
+  const logClosed = finished(log).then(() => undefined, (error: unknown) => error);
   try {
+    await once(log, "open");
+    log.write(`[${startedAt}] ${JSON.stringify(registration.argv)}\n`);
     const child = spawn(registration.argv[0], registration.argv.slice(1), { cwd: registration.cwd, env: process.env, shell: false, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.pipe(log, { end: false });
     child.stderr.pipe(log, { end: false });
+    void logClosed.then((error) => {
+      if (error === undefined) return;
+      // 日志失败会解除 pipe；继续排空输出，避免清理命令因背压卡住。
+      child.stdout.unpipe(log).resume();
+      child.stderr.unpipe(log).resume();
+    });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -31,7 +40,8 @@ async function executeRegistration(store: ActionStore, registration: Registratio
     running = { ...running, completedAt: new Date().toISOString(), error: error instanceof Error ? error.message : String(error), state: "failed" };
   } finally {
     log.end();
-    await once(log, "close").catch(() => undefined);
+    const error = await logClosed;
+    if (error !== undefined) running = { ...running, error: error instanceof Error ? error.message : String(error), state: "failed" };
   }
   await store.writeRegistration(running);
   return running;
