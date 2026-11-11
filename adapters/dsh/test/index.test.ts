@@ -14,10 +14,10 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function waitForFile(path: string): Promise<string> {
+async function waitForFile(path: string, expected: string): Promise<string> {
   for (let attempt = 0; attempt < 100; attempt++) {
     const value = await readFile(path, "utf8").catch(() => undefined);
-    if (value !== undefined) return value;
+    if (value === expected) return value;
     await delay(20);
   }
   throw new Error(`timed out waiting for ${path}`);
@@ -81,7 +81,7 @@ describe("dsh adapter", () => {
     const result = await tools.get("atexit_register")!.execute({ argv: ["node", "-e", `require('node:fs').writeFileSync(${JSON.stringify(output)}, 'done')`] }, { agent });
     expect(result).toMatchObject({ state: "pending" });
     await disposer!();
-    expect(await waitForFile(output)).toBe("done");
+    expect(await waitForFile(output, "done")).toBe("done");
   });
 
   test("reopens a resumed session before accepting new registrations", async () => {
@@ -97,15 +97,15 @@ describe("dsh adapter", () => {
     await listeners.get("agent/created")?.({ agent: first, source: "startup" });
     await register(first, firstOutput);
     await disposer();
-    expect(await waitForFile(firstOutput)).toBe("done");
+    expect(await waitForFile(firstOutput, "done")).toBe("done");
     const resumed = createAgent(), secondOutput = join(root, "second.txt");
     await listeners.get("agent/created")?.({ agent: resumed, source: "resume" });
     const result = await register(resumed, secondOutput);
-    if (result.state !== "pending") await waitForFile(secondOutput);
+    if (result.state !== "pending") await waitForFile(secondOutput, "done");
     expect(result.state).toBe("pending");
     expect(await readFile(secondOutput, "utf8").catch(() => undefined)).toBeUndefined();
     await disposer();
-    expect(await waitForFile(secondOutput)).toBe("done");
+    expect(await waitForFile(secondOutput, "done")).toBe("done");
   });
 
   test("can ask before registering when configured", async () => {
@@ -148,7 +148,7 @@ describe("dsh adapter", () => {
     expect(await readFile(output, "utf8").catch(() => undefined)).toBeUndefined();
     const archive = { domain: "workspace", operation: "put", table: "", value: { archivedSessionIds: ["session-archive"] } };
     listeners.get("domain/changed")!(archive);
-    expect(await waitForFile(output)).toBe("done");
+    expect(await waitForFile(output, "done")).toBe("done");
     listeners.get("domain/changed")!(archive);
     listeners.get("session/disposed")!({ id: "session-archive" });
     await disposer!();
