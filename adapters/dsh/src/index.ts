@@ -63,6 +63,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     return binding;
   };
 
+  ctx.on("agent/created", async ({ agent }) => { await store.openSession(bindingFor(agent)); }, { global: true });
   ctx.on("session/disposed", (session) => {
     const id = String(session.id);
     const binding = sessions.get(id);
