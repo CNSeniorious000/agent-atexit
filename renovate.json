@@ -10,6 +10,12 @@
     {
       "groupName": "dsh",
       "matchPackageNames": ["@deepseek-ai/dsh-*"]
+    },
+    {
+      "matchDatasources": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchPackageNames": ["@deepseek-ai/dsh-*"],
+      "ignoreUnstable": false
     }
   ]
 }
