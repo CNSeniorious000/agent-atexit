@@ -24,6 +24,12 @@ async function waitForFile(path: string, expected: string): Promise<string> {
   throw new Error(`timed out waiting for ${path}`);
 }
 
+async function waitForCleanup(root: string, id: string): Promise<void> {
+  const store = new ActionStore(root);
+  for (let attempt = 0; attempt < 100 && (await store.get(id)).state !== "succeeded"; attempt++) await delay(20);
+  expect((await store.get(id)).state).toBe("succeeded");
+}
+
 describe("dsh adapter", () => {
   for (const mode of ["missing PATH", "spawn failure"]) test(`drains cleanup with ${mode}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-dsh-worker-")); roots.push(root);
@@ -39,9 +45,7 @@ describe("dsh adapter", () => {
       if (mode === "missing PATH") process.env.PATH = root;
       else process.execPath = join(root, "missing-runtime");
       await dispose();
-      const store = new ActionStore(root);
-      for (let attempt = 0; attempt < 100 && (await store.get(result.registration_id)).state !== "succeeded"; attempt++) await delay(20);
-      expect((await store.get(result.registration_id)).state).toBe("succeeded");
+      await waitForCleanup(root, result.registration_id);
       expect(await readFile(output, "utf8")).toBe("done");
       expect(warnings.length).toBe(mode === "spawn failure" ? 1 : 0);
     } finally {
@@ -107,6 +111,7 @@ describe("dsh adapter", () => {
     const result = await tools.get("atexit_register")!.execute({ argv: ["node", "-e", `require('node:fs').writeFileSync(${JSON.stringify(output)}, 'done')`] }, { agent });
     expect(result).toMatchObject({ state: "pending" });
     await disposer!();
+    await waitForCleanup(root, (result as { registration_id: string }).registration_id);
     expect(await waitForFile(output, "done")).toBe("done");
   });
 
@@ -121,8 +126,9 @@ describe("dsh adapter", () => {
     const register = (agent: ReturnType<typeof createAgent>, output: string) => tools.get("atexit_register").execute({ argv: ["node", "-e", `require('node:fs').writeFileSync(${JSON.stringify(output)}, 'done')`] }, { agent });
     const first = createAgent(), firstOutput = join(root, "first.txt");
     await listeners.get("agent/created")?.({ agent: first, source: "startup" });
-    await register(first, firstOutput);
+    const firstResult = await register(first, firstOutput);
     await disposer();
+    await waitForCleanup(root, firstResult.registration_id);
     expect(await waitForFile(firstOutput, "done")).toBe("done");
     const resumed = createAgent(), secondOutput = join(root, "second.txt");
     await listeners.get("agent/created")?.({ agent: resumed, source: "resume" });
@@ -131,6 +137,7 @@ describe("dsh adapter", () => {
     expect(result.state).toBe("pending");
     expect(await readFile(secondOutput, "utf8").catch(() => undefined)).toBeUndefined();
     await disposer();
+    await waitForCleanup(root, result.registration_id);
     expect(await waitForFile(secondOutput, "done")).toBe("done");
   });
 

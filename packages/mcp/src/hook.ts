@@ -33,7 +33,8 @@ function findRegistrationIds(value: unknown, found = new Set<string>()): string[
   } else if (value && typeof value === "object") {
     const result = value as Record<string, unknown>, id = result.registration_id ?? result.registrationId;
     if (typeof id === "string") found.add(id);
-    else for (const key of ["structuredContent", "content", "text"]) findRegistrationIds(result[key], found);
+    // Hermes may serialize the MCP response inside its own result envelope.
+    else for (const key of ["structuredContent", "content", "text", "result"]) findRegistrationIds(result[key], found);
   }
   return [...found];
 }

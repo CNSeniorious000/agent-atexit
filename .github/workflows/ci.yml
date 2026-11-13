@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -32,6 +33,7 @@ jobs:
       - run: bun run check
       - run: git diff --exit-code -- plugins/atexit/dist
       - run: bun run artifacts
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 26
       - uses: actions/upload-artifact@v7
         if: matrix.os == 'ubuntu-latest' && matrix.node == 26
         with:
@@ -42,7 +44,7 @@ jobs:
             artifacts/agent-atexit-dsh-*.tgz
 
   compatibility:
-    name: Adapter compatibility (${{ matrix.name }})
+    name: Adapter SDK (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -76,7 +78,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - run: bun install --frozen-lockfile
+      # bun add below resolves and installs the whole workspace in one pass; a frozen pre-install would be thrown away.
       - name: Install compatibility SDKs
         env:
           HOST_PACKAGES: ${{ matrix.packages }}

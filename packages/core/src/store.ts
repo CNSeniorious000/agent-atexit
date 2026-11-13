@@ -31,6 +31,7 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  await chmod(temporary, 0o600);
   for (let attempt = 0; ; attempt++) {
     try { await rename(temporary, path); break; }
     catch (error) {
@@ -39,7 +40,6 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
       await delay(25);
     }
   }
-  await chmod(path, 0o600);
 }
 
 async function readJson<T>(path: string): Promise<T> {

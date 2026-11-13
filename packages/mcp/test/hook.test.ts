@@ -132,14 +132,15 @@ describe("portable lifecycle hook", () => {
     expect(await store.get(registration.id)).toMatchObject({ host: "kimi-code", state: "pending" });
   });
 
-  test("keeps Hermes cleanup across turns and runs it only at session finalization", async () => {
+  for (const wrapped of [false, true]) test(`keeps Hermes cleanup across turns and finalizes it (wrapped: ${wrapped})`, async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-hermes-"));
     roots.push(root);
     const store = new ActionStore(root);
     const output = join(root, "executed.txt");
     const registration = await store.register({ argv: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(output)}, 'done')`] });
     const common = { cwd: root, session_id: "hermes-session" };
-    await runHook(root, { ...common, hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: registration.id }) } });
+    const result = JSON.stringify({ registration_id: registration.id });
+    await runHook(root, { ...common, hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: wrapped ? JSON.stringify({ result }) : result } });
     expect(await store.get(registration.id)).toMatchObject({ host: "hermes", state: "pending" });
     await runHook(root, { ...common, hook_event_name: "on_session_end" });
     expect((await store.get(registration.id)).state).toBe("pending");
