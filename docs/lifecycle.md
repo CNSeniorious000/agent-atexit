@@ -42,7 +42,7 @@ Registrations and true reopen boundaries use permanent sequence tickets, not tim
 
 ### Kimi Code
 
-Kimi's workspace MCP connection is not session-scoped and tool calls carry no protocol-level session ID. The adapter uses Kimi's `PostToolUse` payload to bind the returned registration ID to the authoritative session ID without adding an approval prompt. `SessionEnd` reports `exit` or `archive`. The TUI's emergency `SIGHUP` path can bypass cleanup, and non-interactive shutdown is separately bounded.
+Kimi's workspace MCP connection is not session-scoped and tool calls carry no protocol-level session ID. The adapter uses Kimi's `PostToolUse` payload to bind the returned registration ID to the authoritative session ID without adding an approval prompt. `SessionStart` reopens ownership when resuming a finalized session ID. `SessionEnd` reports `exit` or `archive`. The TUI's emergency `SIGHUP` path can bypass cleanup, and non-interactive shutdown is separately bounded. Kimi 2.6.2's TUI passed native exit/resume checks; its `-p` mode omitted the plugin tools from the model schema in the [native smoke tests](testing.md#native-smoke-results).
 
 ### OpenCode
 
@@ -55,5 +55,7 @@ The native tool context supplies an owning Agent. The adapter installs exactly o
 ### Hermes
 
 Shell hooks bind `post_tool_call` results using Hermes's session ID and drain at `on_session_finalize`. `on_session_end` is a turn boundary and never triggers cleanup. Hermes 0.21.3's `hermes chat --oneshot` uses the supported chat lifecycle; its separate top-level `hermes -z PROMPT` path skips finalization. The [adapter configuration](../adapters/hermes/config.yaml) explicitly shares the state directory because MCP filters inherited environment variables. It disables Hermes's outer callback timeout to prevent concurrent callback suppression; each shell command retains its own timeout. This changes callback execution for all plugins in the configured profile.
+
+Hermes 0.23.1 may wrap the serialized MCP result in another `result` envelope; both shapes bind. The clean-release smoke passed interactive `chat --cli` → `/quit`, but `chat --oneshot --cli` left cleanup pending after exit. See [native smoke results](testing.md#native-smoke-results); behavior observed in 0.21.x does not establish newer gateway lifecycle coverage.
 
 Resuming a finalized session ID is unsupported: its closed state makes newly bound cleanup run immediately. Start a fresh session instead. Hermes can restore a cached prompt without emitting `on_session_start`, so that event alone cannot reopen ownership reliably. Automatic background reviews can still be in flight when quiet one-shot sessions finalize; this adapter does not manage their requests or SDK clients.

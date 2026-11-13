@@ -12,7 +12,7 @@ Hermes passes registration results to `post_tool_call`; `on_session_finalize` dr
 
 `plugins.hook_callback_timeout: 0` makes plugin callbacks run on their caller threads. Hermes 0.21.3 otherwise skips overlapping invocations of the same callback, which can lose a registration's session binding during parallel tool calls. This setting affects all plugin callbacks; the shell hooks above still enforce their own three-second command timeout.
 
-Use the chat lifecycle: `hermes chat --oneshot --query-file prompt.txt --accept-hooks`. Hermes 0.21.3's separate top-level `hermes -z PROMPT` path does not emit `on_session_finalize`, so deferred cleanup is not supported on that path.
+Use the host's session-finalization lifecycle. Hermes 0.23.1 passed an interactive `hermes chat --cli --accept-hooks` → `/quit` smoke test on a clean upstream release. Its `chat --oneshot --cli` path left registrations pending after exit and gateway shutdown, so it does not currently provide a verified cleanup boundary. Hermes 0.21.3's separate top-level `hermes -z PROMPT` path also skips `on_session_finalize`.
 
 Automatic background reviews can still be in flight when quiet one-shot sessions finalize; this adapter does not manage their requests or SDK clients.
 
@@ -24,4 +24,4 @@ The shared skill and tool descriptions provide the cleanup rules. Hermes 0.21.4'
 
 The MCP command selects `--hermes` metadata for compatibility, but Hermes 0.21.4 does not pass `initialize.instructions` to the model. Those server instructions are not the guidance delivery path for this setup.
 
-The latest Hermes end-to-end smoke tests used locally modified checkouts. Those results do not validate triggering or batching on an unmodified Hermes installation. Native skill loading and hook contracts alone do not establish reliable model behavior.
+The [native smoke record](../../docs/testing.md#native-smoke-results) distinguishes clean-release lifecycle checks from model behavior. The 0.23.1 probe explicitly requested registration and verified the cleanup on disk; it does not validate autonomous resource recognition or batching.
