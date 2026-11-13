@@ -24,6 +24,31 @@ async function waitForFile(path: string, expected: string): Promise<string> {
 }
 
 describe("dsh adapter", () => {
+  for (const mode of ["missing PATH", "spawn failure"]) test(`drains cleanup with ${mode}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-dsh-worker-")); roots.push(root);
+    process.env.AGENT_ATEXIT_STATE_DIR = root;
+    const plugin = await import(pathToFileURL(resolve(import.meta.dirname, "../dist/index.js")).href);
+    const tools = new Map<string, any>(), warnings: string[] = [];
+    plugin.apply({ inject: () => undefined, on: () => undefined, logger: { warn: (message: string) => warnings.push(message) }, tools: { register: (tool: any) => tools.set(tool.name, tool) } });
+    let dispose!: () => Promise<void>;
+    const agent = { ctx: { effect: (setup: () => () => Promise<void>) => { dispose = setup(); } }, session: { id: "worker-session", header: { cwd: root } } };
+    const output = join(root, "executed.txt"), executable = process.execPath, path = process.env.PATH;
+    const result = await tools.get("atexit_register").execute({ argv: [executable, "-e", `require('node:fs').writeFileSync(${JSON.stringify(output)}, 'done')`] }, { agent });
+    try {
+      if (mode === "missing PATH") process.env.PATH = root;
+      else process.execPath = join(root, "missing-runtime");
+      await dispose();
+      const store = new ActionStore(root);
+      for (let attempt = 0; attempt < 100 && (await store.get(result.registration_id)).state !== "succeeded"; attempt++) await delay(20);
+      expect((await store.get(result.registration_id)).state).toBe("succeeded");
+      expect(await readFile(output, "utf8")).toBe("done");
+      expect(warnings.length).toBe(mode === "spawn failure" ? 1 : 0);
+    } finally {
+      process.execPath = executable;
+      if (path === undefined) delete process.env.PATH; else process.env.PATH = path;
+    }
+  });
+
   test("captures the effective directory per registration without changing session ownership", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-dsh-cwd-"));
     roots.push(root);
