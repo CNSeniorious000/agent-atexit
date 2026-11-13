@@ -13,7 +13,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function runHook(root: string, input: unknown, env: NodeJS.ProcessEnv = {}): Promise<string> {
+async function runHook(root: string, input: unknown, env: NodeJS.ProcessEnv = {}, diagnostic?: RegExp): Promise<string> {
   const hook = resolve(import.meta.dirname, "../../../plugins/atexit/dist/hook.mjs");
   const child = spawn("node", [hook], { env: { ...process.env, AGENT_ATEXIT_RUN_INLINE: "1", AGENT_ATEXIT_STATE_DIR: root, ...env }, stdio: ["pipe", "pipe", "pipe"] });
   let stderr = "", stdout = "";
@@ -27,11 +27,22 @@ async function runHook(root: string, input: unknown, env: NodeJS.ProcessEnv = {}
     expect(stdout).toBe("");
     throw new Error(`hook exited ${String(code)}: ${stderr}`);
   }
-  expect(stderr).toBe("");
+  if (diagnostic) expect(stderr).toMatch(diagnostic); else expect(stderr).toBe("");
   return stdout;
 }
 
 describe("portable lifecycle hook", () => {
+  test("executes claimed cleanup once when the worker cannot spawn", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-hook-spawn-")); roots.push(root);
+    const store = new ActionStore(root), output = join(root, "executed.txt"), preload = join(root, "spawn-error.cjs");
+    const registration = await store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'done')`] });
+    await store.bind(registration.id, { host: "claude-code", cwd: root, sessionId: "spawn-failure" });
+    await writeFile(preload, `const cp = require('node:child_process'), spawn = cp.spawn; cp.spawn = (command, args, options) => spawn(args?.[0]?.endsWith('worker.mjs') ? ${JSON.stringify(join(root, "missing-runtime"))} : command, args, options); require('node:module').syncBuiltinESMExports();`);
+    await runHook(root, { cwd: root, session_id: "spawn-failure", hook_event_name: "SessionEnd" }, { AGENT_ATEXIT_RUN_INLINE: "0", NODE_OPTIONS: `--require=${preload}`, PLUGIN_ROOT: undefined }, /worker spawn failed; running cleanup in-process/);
+    expect((await store.get(registration.id)).state).toBe("succeeded");
+    expect(await readFile(output, "utf8")).toBe("done");
+  });
+
   for (const failure of ["corrupt record", "lock timeout", "write ENOENT"]) {
     test(`reports binding failures: ${failure}`, async () => {
       const root = await mkdtemp(join(tmpdir(), "agent-atexit-bind-error-")); roots.push(root);

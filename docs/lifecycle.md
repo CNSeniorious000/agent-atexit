@@ -14,6 +14,8 @@ provisional -> pending -> claimed -> running -> succeeded | failed
 4. Claim writes `claimed` to every selected registration before publishing a run record. This ordering is deliberately at-most-once: a crash may lose work but cannot make a later close claim the same action again.
 5. A detached worker acquires a persistent `run.lock`, executes registrations in reverse creation order, and records command status plus output logs.
 
+If the worker cannot start, the adapter reports the spawn failure and attempts the claimed run in-process. The host's shutdown budget still applies; this fallback cannot guarantee completion of a long command.
+
 ## Lock recovery
 
 Session and registration locks under `locks/` do not expire: directory age cannot distinguish a crashed owner from a paused one. Contention fails after two seconds rather than allowing overlapping owners. After a crash, stop **all** processes using the state directory before removing a confirmed abandoned directory under `locks/`; never remove it while a writer may still be active. Do not remove persistent run locks under `runs/`, which prevent replaying commands. Stop older plugin processes before upgrading: older writers can still evict locks based on age.

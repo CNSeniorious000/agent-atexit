@@ -52,7 +52,14 @@ async function startRun(root: string, run: RunRecord): Promise<void> {
   }
   const worker = fileURLToPath(new URL("./worker.mjs", import.meta.url));
   const child = spawn(process.execPath, [worker, "--state-dir", root, "--run-id", run.id], { detached: true, env: { ...process.env, AGENT_ATEXIT_STATE_DIR: root }, stdio: "ignore" });
-  child.unref();
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => { child.unref(); resolve(); });
+    child.once("error", reject);
+  }).catch(async (error) => {
+    // The run is already claimed; attempt cleanup here rather than leave it permanently stranded.
+    console.error("agent-atexit worker spawn failed; running cleanup in-process", error);
+    await executeRun(root, run.id);
+  });
 }
 
 async function main(): Promise<void> {
