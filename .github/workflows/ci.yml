@@ -94,6 +94,7 @@ jobs:
           HOST_VERSION: ${{ matrix.version }}
         run: |
           # Coordinated SDK families must not keep newer transitive peers from the main lockfile.
+          # Lock keys can be placements such as @deepseek-ai/dsh-agent/zod; only values identify the actual package.
           bun -e 'const { HOST_FAMILY: prefix, HOST_VERSION: version } = process.env; if (prefix) { const p = await Bun.file("package.json").json(), lock = Bun.JSON5.parse(await Bun.file("bun.lock").text()); p.overrides = { ...p.overrides, ...Object.fromEntries(Object.values(lock.packages).map(([specifier]) => specifier.slice(0, specifier.lastIndexOf("@"))).filter(n => n.startsWith(prefix)).map(n => [n, version])) }; await Bun.write("package.json", JSON.stringify(p, null, 2) + "\n"); }'
           read -r -a packages <<< "$HOST_PACKAGES"
           bun add --dev --exact --ignore-scripts "${packages[@]}"
