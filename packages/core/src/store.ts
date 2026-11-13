@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { sessionKey } from "./paths.ts";
@@ -22,7 +22,7 @@ interface SessionRecord {
 
 function validateRegisterInput(input: RegisterInput): void {
   if (!Array.isArray(input.argv) || input.argv.length === 0 || input.argv[0].length === 0 || input.argv.some((part) => typeof part !== "string")) throw new Error("argv must start with a non-empty executable string");
-  if (input.cwd !== undefined && !input.cwd.startsWith("/")) throw new Error("cwd must be an absolute path");
+  if (input.cwd !== undefined && !isAbsolute(input.cwd)) throw new Error("cwd must be an absolute path");
   if (input.key !== undefined && (input.key.length === 0 || input.key.length > 128)) throw new Error("key must contain 1-128 characters");
   if (input.timeoutMs !== undefined && (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 100 || input.timeoutMs > MAX_TIMEOUT_MS)) throw new Error(`timeoutMs must be an integer from 100 to ${MAX_TIMEOUT_MS}`);
 }
@@ -31,8 +31,15 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
-  await rename(temporary, path);
-  await chmod(path, 0o600);
+  await chmod(temporary, 0o600);
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(temporary, path); break; }
+    catch (error) {
+      // Windows readers can briefly block replacement. Never unlink the destination: readers need an atomic snapshot.
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(errorCode(error) ?? "") || attempt === 20) throw error;
+      await delay(25);
+    }
+  }
 }
 
 async function readJson<T>(path: string): Promise<T> {

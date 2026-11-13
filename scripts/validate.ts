@@ -41,7 +41,8 @@ if (!("mcpServers" in codexMcp)) throw new Error("Codex MCP config must contain 
 if (!("mcpServers" in claudeMcp)) throw new Error("Claude MCP config must contain an mcpServers map");
 const hooks = await readJson("plugins/atexit/hooks/hooks.json") as { hooks?: Record<string, unknown> };
 if (!hooks.hooks?.SessionStart || !hooks.hooks?.PostToolUse || !hooks.hooks?.SessionEnd) throw new Error("portable hooks must open sessions, bind registrations, and close sessions");
-const kimi = await readJson("adapters/kimi-code/kimi.plugin.json");
+const kimi = await readJson("adapters/kimi-code/kimi.plugin.json") as { hooks?: { event?: string }[]; systemPrompt?: string };
+if (["SessionStart", "PostToolUse", "SessionEnd"].some((event) => !kimi.hooks?.some((hook) => hook.event === event))) throw new Error("Kimi hooks must open sessions, bind registrations, and close sessions");
 // Kimi launches the portable server without a host flag, so its manifest prompt and the MCP instructions must not drift.
 if (typeof kimi.systemPrompt !== "string" || kimi.systemPrompt !== cleanupInstruction || !/register.*fallback cleanup/is.test(kimi.systemPrompt) || !/cleanup succeeds.*cancel/is.test(kimi.systemPrompt)) throw new Error("Kimi system prompt must cover fallback registration and cancellation after successful cleanup");
 // The description drives skill triggering and the body is what hosts load, so both must carry the scope. Parsing the frontmatter also rejects a description that hosts cannot read at all.

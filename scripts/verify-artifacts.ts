@@ -23,7 +23,7 @@ async function tarOutput(args: string[]): Promise<string> {
 for (const tarball of tarballs) {
   const path = resolve(artifacts, tarball.file);
   if ((await stat(path)).size === 0) throw new Error(`${tarball.file} is empty`);
-  const members = (await tarOutput(["-tzf", path])).trim().split("\n").toSorted();
+  const members = (await tarOutput(["-tzf", path])).trim().split(/\r?\n/).toSorted();
   if (JSON.stringify(members) !== JSON.stringify([...tarball.members].toSorted())) throw new Error(`${tarball.file} has unexpected members: ${members.join(", ")}`);
   const manifest = JSON.parse(await tarOutput(["-xOzf", path, "package/package.json"])) as { name?: string; publishConfig?: { access?: string }; version?: string };
   if (manifest.name !== tarball.name || manifest.version !== version || manifest.publishConfig?.access !== "public") throw new Error(`${tarball.file} has invalid package metadata`);
