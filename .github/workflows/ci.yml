@@ -22,11 +22,11 @@ jobs:
           - os: ubuntu-latest
             node: 18
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.4
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ matrix.node }}
       - run: bun install --frozen-lockfile
@@ -34,7 +34,7 @@ jobs:
       - run: git diff --exit-code -- plugins/atexit/dist
       - run: bun run artifacts
         if: matrix.os == 'ubuntu-latest' && matrix.node == 26
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: matrix.os == 'ubuntu-latest' && matrix.node == 26
         with:
           name: installable-artifacts
@@ -53,15 +53,23 @@ jobs:
         include:
           # Current pinned SDKs are covered by check; keep previously supported APIs here.
           - name: DSH 0.1.1-rc.2
+            family: '@deepseek-ai/dsh-'
+            version: 0.1.1-rc.2
             tests: adapters/dsh/test/
             packages: '@deepseek-ai/dsh-agent@0.1.1-rc.2 @deepseek-ai/dsh-tools@0.1.1-rc.2 @deepseek-ai/dsh-attachment@0.1.1-rc.2 @deepseek-ai/cordis@4.0.1'
           - name: DSH 0.2.1-rc.2
+            family: '@deepseek-ai/dsh-'
+            version: 0.2.1-rc.2
             tests: adapters/dsh/test/
             packages: '@deepseek-ai/dsh-agent@0.2.1-rc.2 @deepseek-ai/dsh-tools@0.2.1-rc.2 @deepseek-ai/dsh-attachment@0.2.1-rc.2 @deepseek-ai/cordis@4.0.5'
           - name: DSH 0.2.2-rc.1
+            family: '@deepseek-ai/dsh-'
+            version: 0.2.2-rc.1
             tests: adapters/dsh/test/
             packages: '@deepseek-ai/dsh-agent@0.2.2-rc.1 @deepseek-ai/dsh-tools@0.2.2-rc.1 @deepseek-ai/dsh-attachment@0.2.2-rc.1 @deepseek-ai/cordis@4.1.0'
           - name: DSH 0.2.2-rc.2
+            family: '@deepseek-ai/dsh-'
+            version: 0.2.2-rc.2
             tests: adapters/dsh/test/
             packages: '@deepseek-ai/dsh-agent@0.2.2-rc.2 @deepseek-ai/dsh-tools@0.2.2-rc.2 @deepseek-ai/dsh-attachment@0.2.2-rc.2 @deepseek-ai/cordis@4.1.0'
           - name: OpenCode v1 1.18.27
@@ -71,20 +79,25 @@ jobs:
             tests: adapters/opencode/test/
             packages: '@opencode/plugin@2.1.4'
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.4
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
       # bun add below resolves and installs the whole workspace in one pass; a frozen pre-install would be thrown away.
       - name: Install compatibility SDKs
         env:
           HOST_PACKAGES: ${{ matrix.packages }}
+          HOST_FAMILY: ${{ matrix.family }}
+          HOST_VERSION: ${{ matrix.version }}
         run: |
+          # Coordinated SDK families must not keep newer transitive peers from the main lockfile.
+          bun -e 'const { HOST_FAMILY: prefix, HOST_VERSION: version } = process.env; if (prefix) { const p = await Bun.file("package.json").json(), lock = Bun.JSON5.parse(await Bun.file("bun.lock").text()); p.overrides = { ...p.overrides, ...Object.fromEntries(Object.values(lock.packages).map(([specifier]) => specifier.slice(0, specifier.lastIndexOf("@"))).filter(n => n.startsWith(prefix)).map(n => [n, version])) }; await Bun.write("package.json", JSON.stringify(p, null, 2) + "\n"); }'
           read -r -a packages <<< "$HOST_PACKAGES"
           bun add --dev --exact --ignore-scripts "${packages[@]}"
+          bun -e 'const { HOST_FAMILY: prefix, HOST_VERSION: version } = process.env; if (prefix) for (const [specifier] of Object.values(Bun.JSON5.parse(await Bun.file("bun.lock").text()).packages)) if (specifier.startsWith(prefix) && !specifier.endsWith(`@${version}`)) throw new Error(`Mixed SDK family: ${specifier}`);'
       - run: bun run typecheck
       - run: bun run build
       - run: bun test ${{ matrix.tests }}
