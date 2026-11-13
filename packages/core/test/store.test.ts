@@ -83,7 +83,7 @@ describe("ActionStore", () => {
 
   test("resume recovers a killed owner's pending cleanup while preserving live owners and at-most-once execution", async () => {
     const { root, store } = await makeStore(), binding = { cwd: root, host: "opencode", sessionId: "crashed" }, output = join(root, "executed.txt");
-    const source = new URL("../src/store.ts", import.meta.url).pathname;
+    const source = new URL("../src/store.ts", import.meta.url).href;
     const argv = [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, 'once')`];
     const code = `const { ActionStore } = await import(${JSON.stringify(source)}); const store = new ActionStore(${JSON.stringify(root)}), binding = ${JSON.stringify({ ...binding, generation: "child" })}; await store.openSession(binding); const registration = await store.register({argv:${JSON.stringify(argv)}}); await store.bind(registration.id, binding); console.log(registration.id); setInterval(() => {}, 1000);`;
     const child = Bun.spawn([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
@@ -266,7 +266,7 @@ describe("ActionStore", () => {
   });
 
   test("allocates unique sequences across processes and survives a rolled-back hint and old counter writes", async () => {
-    const { root, store } = await makeStore(), source = new URL("../src/store.ts", import.meta.url).pathname;
+    const { root, store } = await makeStore(), source = new URL("../src/store.ts", import.meta.url).href;
     const code = "const { ActionStore } = await import(" + JSON.stringify(source) + "); const store = new ActionStore(" + JSON.stringify(root) + "); console.log(JSON.stringify((await Promise.all(Array.from({length:6}, () => store.register({argv:['echo','deferred']})))).map(record => record.createdSequence)));";
     const children = Array.from({ length: 4 }, () => Bun.spawn([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" }));
     try {
@@ -284,7 +284,7 @@ describe("ActionStore", () => {
   });
 
   test("a killed allocator leaves a consumed ticket without blocking another session", async () => {
-    const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "resumed" }, source = new URL("../src/store.ts", import.meta.url).pathname;
+    const { root, store } = await makeStore(), binding = { cwd: root, host: "test", sessionId: "resumed" }, source = new URL("../src/store.ts", import.meta.url).href;
     await store.closeAndClaim(binding);
     const code = [
       "import { mock } from 'bun:test'; import * as fs from 'node:fs/promises'; const rename = fs.rename;",

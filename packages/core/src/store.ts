@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { sessionKey } from "./paths.ts";
@@ -22,7 +22,7 @@ interface SessionRecord {
 
 function validateRegisterInput(input: RegisterInput): void {
   if (!Array.isArray(input.argv) || input.argv.length === 0 || input.argv[0].length === 0 || input.argv.some((part) => typeof part !== "string")) throw new Error("argv must start with a non-empty executable string");
-  if (input.cwd !== undefined && !input.cwd.startsWith("/")) throw new Error("cwd must be an absolute path");
+  if (input.cwd !== undefined && !isAbsolute(input.cwd)) throw new Error("cwd must be an absolute path");
   if (input.key !== undefined && (input.key.length === 0 || input.key.length > 128)) throw new Error("key must contain 1-128 characters");
   if (input.timeoutMs !== undefined && (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 100 || input.timeoutMs > MAX_TIMEOUT_MS)) throw new Error(`timeoutMs must be an integer from 100 to ${MAX_TIMEOUT_MS}`);
 }
