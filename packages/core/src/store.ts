@@ -31,7 +31,14 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
-  await rename(temporary, path);
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(temporary, path); break; }
+    catch (error) {
+      // Windows readers can briefly block replacement. Never unlink the destination: readers need an atomic snapshot.
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(errorCode(error) ?? "") || attempt === 20) throw error;
+      await delay(25);
+    }
+  }
   await chmod(path, 0o600);
 }
 

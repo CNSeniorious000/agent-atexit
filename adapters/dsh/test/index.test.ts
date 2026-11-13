@@ -11,7 +11,8 @@ const roots: string[] = [];
 
 afterEach(async () => {
   delete process.env.AGENT_ATEXIT_STATE_DIR;
-  await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
+  // Detached workers may still be releasing file handles after publishing the command result.
+  await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })));
 });
 
 async function waitForFile(path: string, expected: string): Promise<string> {
