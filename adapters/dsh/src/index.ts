@@ -4,7 +4,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { ActionStore, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
+import { ActionStore, executeRun, resolveStateRoot, type RunRecord, type SessionBinding } from "../../../packages/core/src/index.ts";
 import { cancelGuidance, registerGuidance } from "../../../packages/core/src/guidance.ts";
 
 export const name = "atexit";
@@ -41,14 +41,18 @@ export function apply(ctx: Context, config: Config = {}): void {
     return () => { if (currentDirectory === read) currentDirectory = undefined; };
   });
 
-  const startRun = (run: RunRecord): void => {
+  const startRun = async (run: RunRecord): Promise<void> => {
     const worker = fileURLToPath(new URL("./worker.js", import.meta.url));
-    const child = spawn("node", [worker, "--state-dir", root, "--run-id", run.id], { detached: true, env: { ...process.env, AGENT_ATEXIT_STATE_DIR: root }, stdio: "ignore" });
-    child.unref();
+    const child = spawn(process.execPath, [worker, "--state-dir", root, "--run-id", run.id], { detached: true, env: { ...process.env, AGENT_ATEXIT_STATE_DIR: root }, stdio: "ignore" });
+    await new Promise<void>((resolve, reject) => { child.once("spawn", () => { child.unref(); resolve(); }); child.once("error", reject); }).catch(async error => {
+      // The run is already claimed; a failed spawn must not strand it or crash the host.
+      ctx.logger.warn(`agent-atexit worker spawn failed; running cleanup in-process: ${String(error)}`);
+      await executeRun(root, run.id);
+    });
   };
   const closeSession = async (binding: SessionBinding): Promise<void> => {
     const run = await store.closeAndClaim(binding);
-    if (run) startRun(run);
+    if (run) await startRun(run);
   };
   const closeFromEvent = (binding: SessionBinding): void => {
     void closeSession(binding).catch((error) => ctx.logger.warn(`agent-atexit: failed to close session ${binding.sessionId}: ${String(error)}`));
@@ -99,7 +103,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       // Ownership stays tied to the original session; each new command captures the effective directory at registration time.
       const registration = await store.register({ argv: input.argv as [string, ...string[]], cwd: input.cwd ?? currentDirectory?.(exec.agent) ?? binding.cwd, ...(input.key === undefined ? {} : { key: input.key }), ...(input.timeout_ms === undefined ? {} : { timeoutMs: input.timeout_ms }) });
       const result = await store.bind(registration.id, binding);
-      if (result.lateRun) startRun(result.lateRun);
+      if (result.lateRun) await startRun(result.lateRun);
       return { registration_id: registration.id, state: result.registration.state };
     },
   }));

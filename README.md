@@ -22,7 +22,7 @@ The core persists registrations before returning success, binds them to the host
 | Kimi Code | bundled MCP server | `SessionEnd` | `exit` and `archive`; `SIGHUP` emergency exit can bypass cleanup |
 | OpenCode | native plugin tools | plugin `dispose` and `session.deleted` | Instance unload and permanent session deletion, not a logical session-close event |
 | dsh | native `ctx.tools` tools | workspace archive or per-agent `ctx.effect` disposer | Web archive and Agent teardown; whole-process teardown has a five-second grace |
-| Hermes (experimental) | bundled MCP server and shell hooks | `on_session_finalize` | Chat session shutdown/reset; top-level `-z` does not emit this hook in 0.21.3 |
+| Hermes (experimental) | bundled MCP server and shell hooks | `on_session_finalize` | Interactive `/quit` verified on 0.23.1; [one-shot limitations](adapters/hermes/README.md) |
 
 Every adapter hands claimed work to a detached worker immediately because host shutdown budgets are not long-command runtimes. `SIGKILL`, power loss, host bugs, and forceful process-tree termination can still prevent execution.
 
@@ -130,6 +130,8 @@ bun run artifacts
 ```
 
 `bun run check` type-checks, builds every runtime, validates manifests, and runs the focused suite. `bun run artifacts` creates the Kimi ZIP plus prebuilt OpenCode and dsh tarballs without publishing them.
+
+See [compatibility testing](docs/testing.md) for the OS/runtime and SDK matrices, native smoke results, known host limitations and the repeatable smoke procedure.
 
 Run `bun run watch` to rebuild every host adapter on source changes. It does not serve a host; launch the desired coding agent separately. Linked hosts can reload their rebuilt plugin according to their own lifecycle; dsh profiles whose server HMR watches `adapters/dsh/dist` reload automatically. Start new dsh sessions after a reload because in-memory session bindings are not migrated between plugin instances.
 

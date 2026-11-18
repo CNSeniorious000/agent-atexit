@@ -18,6 +18,11 @@
   },
   "hooks": [
     {
+      "event": "SessionStart",
+      "command": "node ./dist/hook.mjs",
+      "timeout": 5
+    },
+    {
       "event": "PostToolUse",
       "matcher": "^mcp__plugin-atexit_atexit__atexit_register$",
       "command": "node ./dist/hook.mjs",
