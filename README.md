@@ -22,7 +22,7 @@ The core persists registrations before returning success, binds them to the host
 | Kimi Code | bundled MCP server | `SessionEnd` | `exit` and `archive`; `SIGHUP` emergency exit can bypass cleanup |
 | OpenCode | native plugin tools | plugin `dispose` and `session.deleted` | Instance unload and permanent session deletion, not a logical session-close event |
 | dsh | native `ctx.tools` tools | workspace archive or per-agent `ctx.effect` disposer | Web archive and Agent teardown; whole-process teardown has a five-second grace |
-| Hermes (experimental) | bundled MCP server and shell hooks | `on_session_finalize` | Interactive `/quit` verified on 0.23.1; [one-shot limitations](adapters/hermes/README.md) |
+| Hermes (experimental) | bundled MCP server and shell hooks | `on_session_finalize`, `on_session_delete` (archive/delete/prune) | Interactive `/quit` verified on 0.23.1; archive drains, delete closes ownership; [one-shot limitations](adapters/hermes/README.md) |
 
 Every adapter hands claimed work to a detached worker immediately because host shutdown budgets are not long-command runtimes. `SIGKILL`, power loss, host bugs, and forceful process-tree termination can still prevent execution.
 

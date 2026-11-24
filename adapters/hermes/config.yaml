@@ -18,3 +18,8 @@ hooks:
   on_session_finalize:
     - command: env "AGENT_ATEXIT_STATE_DIR=${HERMES_HOME}/atexit" node "/absolute/path/to/agent-atexit/plugins/atexit/dist/hook.mjs"
       timeout: 3
+  # Archive, delete and prune of a session: cleanup that a session registered should not outlive it just because
+  # nobody typed /quit. Archive only hides the row, so the hook drains without closing ownership.
+  on_session_delete:
+    - command: env "AGENT_ATEXIT_STATE_DIR=${HERMES_HOME}/atexit" node "/absolute/path/to/agent-atexit/plugins/atexit/dist/hook.mjs"
+      timeout: 3

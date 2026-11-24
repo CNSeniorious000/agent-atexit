@@ -55,12 +55,12 @@ const skillText = `${metadata.description}\n${sections[2]!}`;
 if (!metadata.description.includes(resourceExamples) || !sections[2]!.includes(resourceExamples) || !/register[\s\S]*fallback cleanup/i.test(skillText) || !/cleanup succeeds[\s\S]*cancel/i.test(skillText)) throw new Error("cleanup skill must cover the resource scope, fallback registration, and cancellation after successful cleanup");
 const hermes = Bun.YAML.parse(await readFile(resolve(root, "adapters/hermes/config.yaml"), "utf8")) as { skills?: { auto_load?: string[] }; plugins?: { hook_callback_timeout?: number }; mcp_servers?: { atexit?: { command?: string; args?: string[]; env?: { AGENT_ATEXIT_STATE_DIR?: string } } }; hooks?: Record<string, { command?: string; matcher?: string; timeout?: number }[]> };
 if (!hermes.skills?.auto_load?.includes("defer-cleanup")) throw new Error("Hermes config must load the cleanup skill through native skills.auto_load");
-if (!hermes.mcp_servers?.atexit?.env?.AGENT_ATEXIT_STATE_DIR || !hermes.hooks?.post_tool_call?.length || !hermes.hooks?.on_session_finalize?.length) throw new Error("Hermes config must provide shared state and registration/finalization hooks");
+if (!hermes.mcp_servers?.atexit?.env?.AGENT_ATEXIT_STATE_DIR || !hermes.hooks?.post_tool_call?.length || !hermes.hooks?.on_session_finalize?.length || !hermes.hooks?.on_session_delete?.length) throw new Error("Hermes config must provide shared state and registration/finalization/deletion hooks");
 const hermesMcp = hermes.mcp_servers.atexit, hermesState = hermesMcp.env!.AGENT_ATEXIT_STATE_DIR!;
 if (hermesMcp.command !== "node" || hermesMcp.args?.length !== 2 || !hermesMcp.args[0]?.endsWith("/mcp.mjs") || hermesMcp.args[1] !== "--hermes") throw new Error("Hermes MCP config must launch the portable server with Hermes guidance");
 // Validate the shipped template as one unit: a hook using another state directory silently loses registrations.
 const hermesHookCommand = `env "AGENT_ATEXIT_STATE_DIR=${hermesState}" node "${hermesMcp.args[0].replace(/mcp\.mjs$/, "hook.mjs")}"`;
-for (const event of ["post_tool_call", "on_session_finalize"]) for (const hook of hermes.hooks[event]!) {
+for (const event of ["post_tool_call", "on_session_finalize", "on_session_delete"]) for (const hook of hermes.hooks[event]!) {
   if (hook.command !== hermesHookCommand || hook.timeout !== 3) throw new Error(`Hermes ${event} must run the portable hook with shared state and a 3-second budget`);
   if (hook.matcher !== (event === "post_tool_call" ? "^mcp__atexit__atexit_register$" : undefined)) throw new Error(`Hermes ${event} has an unexpected matcher`);
 }

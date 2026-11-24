@@ -160,6 +160,41 @@ describe("portable lifecycle hook", () => {
     expect((await store.get(registration.id)).state).toBe("succeeded");
   });
 
+  test("drains Hermes cleanup on archive and leaves ownership open for the unarchived session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-hermes-archive-")); roots.push(root);
+    const store = new ActionStore(root), output = join(root, "executed.txt");
+    const common = { cwd: root, session_id: "archived-session" };
+    const run = async (text: string) => store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(text + "\n")})`] });
+    const bind = (id: string) => runHook(root, { ...common, hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: id }) } });
+    const archived = await run("archive");
+    await bind(archived.id);
+    await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "archive" } });
+    expect(await readFile(output, "utf8")).toBe("archive\n");
+    expect((await store.get(archived.id)).state).toBe("succeeded");
+    // Unarchiving keeps the session ID: a later registration stays pending instead of running on bind.
+    const resumed = await run("finalize");
+    await bind(resumed.id);
+    expect((await store.get(resumed.id)).state).toBe("pending");
+    await runHook(root, { ...common, hook_event_name: "on_session_finalize" });
+    expect((await readFile(output, "utf8")).replaceAll("\r\n", "\n")).toBe("archive\nfinalize\n");
+  });
+
+  test("closes Hermes ownership permanently when the session is deleted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-hermes-delete-")); roots.push(root);
+    const store = new ActionStore(root), output = join(root, "executed.txt");
+    const common = { cwd: root, session_id: "deleted-session" };
+    const run = async (text: string) => store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(text + "\n")})`] });
+    const bind = (id: string) => runHook(root, { ...common, hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: id }) } });
+    const deleted = await run("delete");
+    await bind(deleted.id);
+    await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "delete" } });
+    expect(await readFile(output, "utf8")).toBe("delete\n");
+    // A deleted session cannot own new cleanup: its late registration runs as soon as it binds.
+    const late = await run("late");
+    await bind(late.id);
+    expect((await readFile(output, "utf8")).replaceAll("\r\n", "\n")).toBe("delete\nlate\n");
+  });
+
   test("SessionStart resumes cleanup ownership for tool calls sharing a session ID", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-resume-")); roots.push(root);
     const store = new ActionStore(root), common = { cwd: root, session_id: "same-thread" }, output = join(root, "executed.txt");

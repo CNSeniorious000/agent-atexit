@@ -13,11 +13,12 @@ interface HookInput {
   tool_response?: unknown;
   tool_calls?: { tool_name?: string; tool_input?: { command?: unknown; content?: unknown; new_string?: unknown; newString?: unknown } }[];
   tool_output?: unknown;
-  extra?: { result?: unknown };
+  extra?: { result?: unknown; reason?: unknown };
 }
 
 function detectHost(input: HookInput): string {
-  if (input.hook_event_name === "post_tool_call" || input.hook_event_name === "on_session_finalize") return "hermes";
+  // Hermes emits its own event names; no other host reports them.
+  if (input.hook_event_name === "post_tool_call" || input.hook_event_name === "on_session_finalize" || input.hook_event_name === "on_session_delete") return "hermes";
   if (input.client_type === "kimi_code_cli") return "kimi-code";
   if (process.env.PLUGIN_ROOT) return "codex";
   return "claude-code";
@@ -99,6 +100,13 @@ async function main(): Promise<void> {
   // Hermes on_session_end is a turn boundary; only on_session_finalize ends resource ownership.
   if (input.hook_event_name === "SessionEnd" || input.hook_event_name === "on_session_finalize") {
     const run = await store.closeAndClaim(binding);
+    if (run) await startRun(root, run);
+    return;
+  }
+  // Hermes archives by hiding the row, not by ending the session, and it can unarchive and resume the same ID: drain
+  // now but leave ownership open. A real delete or prune closes the session for good.
+  if (input.hook_event_name === "on_session_delete") {
+    const run = input.extra?.reason === "archive" ? await store.drainPending(binding) : await store.closeAndClaim(binding, true);
     if (run) await startRun(root, run);
   }
 }

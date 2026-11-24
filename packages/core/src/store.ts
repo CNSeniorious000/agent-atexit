@@ -139,6 +139,18 @@ export class ActionStore {
     });
   }
 
+  // Claim a session's pending cleanup without closing ownership: Hermes hides an archived row instead of ending the
+  // session, and it can unarchive and resume the same session ID, so closing here would make the next registration
+  // run on bind. Reads the session record only — a delete sweep must not create state for sessions that never bound.
+  async drainPending(binding: SessionBinding): Promise<RunRecord | undefined> {
+    await this.init();
+    const key = sessionKey(binding.host, binding.sessionId);
+    return this.withSessionLock(key, async () => {
+      const session = await this.getSession(key);
+      return this.claimPendingLocked(key, binding.host, undefined, binding.generation, session?.generation === binding.generation);
+    });
+  }
+
   async cancel(id: string): Promise<CancelResult> {
     await this.init();
     return this.withRecordLock(id, async () => {

@@ -10,6 +10,8 @@ Skill loading and MCP tool visibility are separate. Hermes 0.21.4 defers MCP too
 
 Hermes passes registration results to `post_tool_call`; `on_session_finalize` drains the same session. Do not use `on_session_end`: it fires after each turn while resources may still be needed.
 
+`on_session_delete` covers the sessions that never finalize interactively: Hermes archives (hides) a session, deletes it, or prunes idle ones, and reports `reason` as `archive`, `delete`, `prune` or `empty_sweep` in the payload's `extra`. Archive is reversible, and an unarchived session keeps the same ID, so the hook drains the pending cleanup without closing ownership — a registration made after unarchiving stays pending instead of running on bind. Delete and prune close the session permanently. Both hooks need their own one-time shell-hook consent (`hermes hooks` / `--accept-hooks`), like the other two events.
+
 `plugins.hook_callback_timeout: 0` makes plugin callbacks run on their caller threads. Hermes 0.21.3 otherwise skips overlapping invocations of the same callback, which can lose a registration's session binding during parallel tool calls. This setting affects all plugin callbacks; the shell hooks above still enforce their own three-second command timeout.
 
 Use the host's session-finalization lifecycle. Hermes 0.23.1 passed an interactive `hermes chat --cli --accept-hooks` → `/quit` smoke test on a clean upstream release. Its `chat --oneshot --cli` path left registrations pending after exit and gateway shutdown, so it does not currently provide a verified cleanup boundary. Hermes 0.21.3's separate top-level `hermes -z PROMPT` path also skips `on_session_finalize`.
