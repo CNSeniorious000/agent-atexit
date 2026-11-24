@@ -145,8 +145,10 @@ export class ActionStore {
     await this.init();
     const registrations = bindings.length === 0 ? [] : await this.list();
     const trackedKeys = new Set(registrations.map(({ sessionKey }) => sessionKey));
-    // A provisional registration has no session key yet: its bind may still arrive, so it keeps every listed session.
-    const unbound = registrations.some(({ state }) => state === "provisional");
+    // A provisional registration has no session key until its own bind arrives, so it keeps the single session the
+    // event names. A bulk sweep removes idle rows that have no tool call in flight, and one provisional record must not
+    // leave a record for every ID in it.
+    const unbound = bindings.length === 1 && registrations.some(({ state }) => state === "provisional");
     const runs: RunRecord[] = [];
     for (const binding of bindings) {
       const key = sessionKey(binding.host, binding.sessionId);

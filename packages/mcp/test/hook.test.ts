@@ -222,7 +222,9 @@ describe("portable lifecycle hook", () => {
     const late = await run("late");
     await bind(late.id);
     expect((await readFile(output, "utf8")).replaceAll("\r\n", "\n")).toBe("delete\nlate\n");
-    // A session that never registered cleanup leaves no tombstone behind for the bulk prune to accumulate.
+    // A session that never registered cleanup leaves no tombstone behind for the bulk prune to accumulate, even when
+    // an unrelated registration is still provisional.
+    await run("pending-elsewhere");
     await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "prune", deleted_ids: ["untouched-a", "untouched-b"] } });
     expect(await sessions()).toHaveLength(1);
   });
