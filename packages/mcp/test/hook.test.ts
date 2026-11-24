@@ -227,6 +227,26 @@ describe("portable lifecycle hook", () => {
     expect(await sessions()).toHaveLength(1);
   });
 
+  test("starts a claimed Hermes cleanup before a later session fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-hermes-lock-")); roots.push(root);
+    const store = new ActionStore(root), output = join(root, "executed.txt");
+    const session = (session_id: string) => ({ cwd: root, session_id });
+    const run = async (text: string) => store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(text + "\n")})`] });
+    const registrations: { id: string }[] = [];
+    for (const name of ["first", "second"]) {
+      const registration = await run(name);
+      await runHook(root, { ...session(name), hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: registration.id }) } });
+      registrations.push(registration);
+    }
+    // Hold the second session's lock: settling it times out, but the first run must already be handed off.
+    const { createHash } = await import("node:crypto");
+    await mkdir(join(root, "locks", `session-${createHash("sha256").update("hermes\0second").digest("hex")}`));
+    await expect(runHook(root, { ...session("first"), hook_event_name: "on_session_delete", extra: { reason: "prune", deleted_ids: ["first", "second"] } })).rejects.toThrow(/timed out waiting for lock/);
+    expect(await readFile(output, "utf8")).toBe("first\n");
+    expect((await store.get(registrations[0]!.id)).state).toBe("succeeded");
+    expect((await store.get(registrations[1]!.id)).state).toBe("pending");
+  });
+
   test("SessionStart resumes cleanup ownership for tool calls sharing a session ID", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-atexit-resume-")); roots.push(root);
     const store = new ActionStore(root), common = { cwd: root, session_id: "same-thread" }, output = join(root, "executed.txt");

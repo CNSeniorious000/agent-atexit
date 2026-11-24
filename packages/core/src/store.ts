@@ -141,7 +141,7 @@ export class ActionStore {
   // permanently. One registration scan serves the whole event: a bulk prune arrives as a single on_session_delete with
   // a three-second hook budget, and rescanning per session would exhaust it before the last ID. Sessions that carry no
   // cleanup state and no provisional registration are skipped, so a sweep over never-used sessions leaves nothing.
-  async settle(bindings: SessionBinding[], mode: "archive" | "delete"): Promise<RunRecord[]> {
+  async settle(bindings: SessionBinding[], mode: "archive" | "delete", onRun?: (run: RunRecord) => Promise<void>): Promise<RunRecord[]> {
     await this.init();
     const registrations = bindings.length === 0 ? [] : await this.list();
     const trackedKeys = new Set(registrations.map(({ sessionKey }) => sessionKey));
@@ -158,7 +158,11 @@ export class ActionStore {
         await atomicWrite(this.sessionPath(key), { ...session, archivedSequence: await this.nextSequence(), cwd: binding.cwd, host: binding.host, sessionKey: key });
         return this.claimPendingLocked(key, binding.host, undefined, binding.generation, session?.generation === binding.generation);
       });
-      if (run) runs.push(run);
+      if (!run) continue;
+      runs.push(run);
+      // Hand off each run as it is claimed: a later session's failure must not strand the runs claimed before it,
+      // because the next event only claims `pending` records.
+      if (onRun) await onRun(run);
     }
     return runs;
   }

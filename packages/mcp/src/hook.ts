@@ -109,7 +109,7 @@ async function main(): Promise<void> {
   if (input.hook_event_name === "on_session_delete") {
     const extraIds = Array.isArray(input.extra?.deleted_ids) ? input.extra.deleted_ids : [];
     const ids = [...new Set([input.session_id, ...extraIds.filter((id): id is string => typeof id === "string" && id.length > 0)])];
-    for (const run of await store.settle(ids.map((sessionId) => ({ ...binding, sessionId })), input.extra?.reason === "archive" ? "archive" : "delete")) await startRun(root, run);
+    await store.settle(ids.map((sessionId) => ({ ...binding, sessionId })), input.extra?.reason === "archive" ? "archive" : "delete", (run) => startRun(root, run));
   }
 }
 
