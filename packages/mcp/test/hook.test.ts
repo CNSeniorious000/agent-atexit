@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionStore } from "@agent-atexit/core";
@@ -158,6 +158,95 @@ describe("portable lifecycle hook", () => {
     await runHook(root, { ...common, hook_event_name: "on_session_finalize" });
     expect(await readFile(output, "utf8")).toBe("done");
     expect((await store.get(registration.id)).state).toBe("succeeded");
+  });
+
+  test("drains Hermes cleanup on archive and leaves ownership open for the unarchived session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-hermes-archive-")); roots.push(root);
+    const store = new ActionStore(root), output = join(root, "executed.txt");
+    const common = { cwd: root, session_id: "archived-session" };
+    const run = async (text: string) => store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(text + "\n")})`] });
+    const bind = (id: string) => runHook(root, { ...common, hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: id }) } });
+    const archived = await run("archive");
+    await bind(archived.id);
+    await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "archive" } });
+    expect(await readFile(output, "utf8")).toBe("archive\n");
+    expect((await store.get(archived.id)).state).toBe("succeeded");
+    // Hooks are separate processes: a registration created before the archive can bind after it and must still run.
+    const raced = await run("raced");
+    await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "archive" } });
+    await bind(raced.id);
+    expect((await store.get(raced.id)).state).toBe("succeeded");
+    // A registration created but not yet bound when the archive lands still runs when its own bind arrives.
+    const unbound = await run("unbound");
+    await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "archive" } });
+    await bind(unbound.id);
+    expect((await store.get(unbound.id)).state).toBe("succeeded");
+    // Unarchiving keeps the session ID: a later registration stays pending instead of running on bind.
+    const resumed = await run("finalize");
+    await bind(resumed.id);
+    expect((await store.get(resumed.id)).state).toBe("pending");
+    await runHook(root, { ...common, hook_event_name: "on_session_finalize" });
+    expect((await readFile(output, "utf8")).replaceAll("\r\n", "\n")).toBe("archive\nraced\nunbound\nfinalize\n");
+  });
+
+  test("drains every session a bulk Hermes delete reports", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-hermes-bulk-")); roots.push(root);
+    const store = new ActionStore(root), output = join(root, "executed.txt");
+    const session = (session_id: string) => ({ cwd: root, session_id });
+    const run = async (text: string) => store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(text + "\n")})`] });
+    const registrations: { id: string }[] = [];
+    for (const name of ["first", "second"]) {
+      const registration = await run(name);
+      await runHook(root, { ...session(name), hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: registration.id }) } });
+      registrations.push(registration);
+    }
+    // Reason `prune` removes several idle sessions in one event: `session_id` is the primary, `deleted_ids` the rest.
+    await runHook(root, { ...session("first"), hook_event_name: "on_session_delete", extra: { reason: "prune", deleted_ids: ["first", "second"] } });
+    expect((await readFile(output, "utf8")).replaceAll("\r\n", "\n").split("\n").filter(Boolean).sort()).toEqual(["first", "second"]);
+    expect((await store.list(registrations.map(({ id }) => id))).every(({ state }) => state === "succeeded")).toBeTrue();
+  });
+
+  test("closes Hermes ownership permanently when the session is deleted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-hermes-delete-")); roots.push(root);
+    const store = new ActionStore(root), output = join(root, "executed.txt");
+    const common = { cwd: root, session_id: "deleted-session" };
+    const run = async (text: string) => store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(text + "\n")})`] });
+    const bind = (id: string) => runHook(root, { ...common, hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: id }) } });
+    const sessions = async () => Promise.all((await readdir(join(root, "sessions"))).map(async (name) => JSON.parse(await readFile(join(root, "sessions", name), "utf8")) as { deleted?: boolean }));
+    const deleted = await run("delete");
+    await bind(deleted.id);
+    await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "delete" } });
+    expect(await readFile(output, "utf8")).toBe("delete\n");
+    // Deletion persists as permanent, so a late registration runs as soon as it binds.
+    expect((await sessions()).map(({ deleted }) => deleted)).toEqual([true]);
+    const late = await run("late");
+    await bind(late.id);
+    expect((await readFile(output, "utf8")).replaceAll("\r\n", "\n")).toBe("delete\nlate\n");
+    // A session that never registered cleanup leaves no tombstone behind for the bulk prune to accumulate, even when
+    // an unrelated registration is still provisional.
+    await run("pending-elsewhere");
+    await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "prune", deleted_ids: ["untouched-a", "untouched-b"] } });
+    expect(await sessions()).toHaveLength(1);
+  });
+
+  test("starts a claimed Hermes cleanup before a later session fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-atexit-hermes-lock-")); roots.push(root);
+    const store = new ActionStore(root), output = join(root, "executed.txt");
+    const session = (session_id: string) => ({ cwd: root, session_id });
+    const run = async (text: string) => store.register({ argv: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(output)}, ${JSON.stringify(text + "\n")})`] });
+    const registrations: { id: string }[] = [];
+    for (const name of ["first", "second"]) {
+      const registration = await run(name);
+      await runHook(root, { ...session(name), hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: registration.id }) } });
+      registrations.push(registration);
+    }
+    // Corrupt the second session's record so settling it fails, while the first run must already be handed off.
+    const { createHash } = await import("node:crypto");
+    await writeFile(join(root, "sessions", `${createHash("sha256").update("hermes\0second").digest("hex")}.json`), "{");
+    await expect(runHook(root, { ...session("first"), hook_event_name: "on_session_delete", extra: { reason: "prune", deleted_ids: ["first", "second"] } })).rejects.toThrow(/JSON|Unexpected end/i);
+    expect(await readFile(output, "utf8")).toBe("first\n");
+    expect((await store.get(registrations[0]!.id)).state).toBe("succeeded");
+    expect((await store.get(registrations[1]!.id)).state).toBe("pending");
   });
 
   test("SessionStart resumes cleanup ownership for tool calls sharing a session ID", async () => {

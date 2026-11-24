@@ -15,6 +15,7 @@ interface SessionRecord {
   deleted?: boolean;
   closedAt?: string;
   openedSequence?: number;
+  archivedSequence?: number;
   cwd: string;
   host: string;
   sessionKey: string;
@@ -102,7 +103,9 @@ export class ActionStore {
       return this.withSessionLock(key, async () => {
         const session = await this.getSession(key);
         // Old writers have no comparable sequence; keep their cleanup pending without letting it replace a current fallback.
-        const late = Boolean(session?.closedAt) || (binding.generation !== undefined && session?.generation !== binding.generation) || (session?.openedSequence !== undefined && current.createdSequence !== undefined && current.createdSequence < session.openedSequence);
+        // An archive keeps ownership open, so a registration created before it but bound after it (hooks are separate
+        // processes) would otherwise stay pending forever.
+        const late = Boolean(session?.closedAt) || (binding.generation !== undefined && session?.generation !== binding.generation) || (session?.openedSequence !== undefined && current.createdSequence !== undefined && current.createdSequence < session.openedSequence) || (session?.archivedSequence !== undefined && current.createdSequence !== undefined && current.createdSequence < session.archivedSequence);
         if (current.key && current.createdSequence !== undefined && !late) await this.cancelReplaced(current, key);
         const registration: RegistrationRecord = { ...current, ...(binding.generation === undefined ? {} : { generation: binding.generation, generationOwner: { pid: process.pid, hostname: hostname() } }), boundAt: new Date().toISOString(), cwd: current.cwd ?? binding.cwd, host: binding.host, sessionKey: key, state: "pending" };
         await this.writeRegistration(registration);
@@ -130,13 +133,40 @@ export class ActionStore {
   async closeAndClaim(binding: SessionBinding, permanent = false): Promise<RunRecord | undefined> {
     await this.init();
     const key = sessionKey(binding.host, binding.sessionId);
-    return this.withSessionLock(key, async () => {
-      const session = await this.getSession(key);
-      // A superseded instance may drain only its own generation, never close the current owner.
-      if (permanent || binding.generation === undefined || !session || session.generation === binding.generation) await atomicWrite(this.sessionPath(key), { ...session, ...(permanent ? { deleted: true } : {}), closedAt: new Date().toISOString(), cwd: binding.cwd, host: binding.host, sessionKey: key });
-      // Only the current owner recovers legacy or abandoned records; stale instances must not drain them.
-      return this.claimPendingLocked(key, binding.host, undefined, permanent ? undefined : binding.generation, session?.generation === binding.generation);
-    });
+    return this.withSessionLock(key, async () => this.closeAndClaimLocked(key, binding, permanent, await this.getSession(key)));
+  }
+
+  // Claim sessions that Hermes archived or removed. Archive keeps ownership open, so it records the archive point and
+  // a registration created before it still runs when its own hook binds afterwards; delete and prune close ownership
+  // permanently. One registration scan serves the whole event: a bulk prune arrives as a single on_session_delete with
+  // a three-second hook budget, and rescanning per session would exhaust it before the last ID. Sessions that carry no
+  // cleanup state and no provisional registration are skipped, so a sweep over never-used sessions leaves nothing.
+  async settle(bindings: SessionBinding[], mode: "archive" | "delete", onRun?: (run: RunRecord) => Promise<void>): Promise<RunRecord[]> {
+    await this.init();
+    const registrations = bindings.length === 0 ? [] : await this.list();
+    const trackedKeys = new Set(registrations.map(({ sessionKey }) => sessionKey));
+    // A provisional registration has no session key until its own bind arrives, so it keeps the single session the
+    // event names. A bulk sweep removes idle rows that have no tool call in flight, and one provisional record must not
+    // leave a record for every ID in it.
+    const unbound = bindings.length === 1 && registrations.some(({ state }) => state === "provisional");
+    const runs: RunRecord[] = [];
+    for (const binding of bindings) {
+      const key = sessionKey(binding.host, binding.sessionId);
+      if (!(trackedKeys.has(key) || unbound || (await this.getSession(key)))) continue;
+      const run = await this.withSessionLock(key, async () => {
+        const session = await this.getSession(key);
+        if (mode === "delete") return this.closeAndClaimLocked(key, binding, true, session);
+        // Write the fence before claiming: a failed fence write must not leave a claimed run that never starts.
+        await atomicWrite(this.sessionPath(key), { ...session, archivedSequence: await this.nextSequence(), cwd: binding.cwd, host: binding.host, sessionKey: key });
+        return this.claimPendingLocked(key, binding.host, undefined, binding.generation, session?.generation === binding.generation);
+      });
+      if (!run) continue;
+      runs.push(run);
+      // Hand off each run as it is claimed: a later session's failure must not strand the runs claimed before it,
+      // because the next event only claims `pending` records.
+      if (onRun) await onRun(run);
+    }
+    return runs;
   }
 
   async cancel(id: string): Promise<CancelResult> {
@@ -209,6 +239,13 @@ export class ActionStore {
       if (registration.id === current.id || registration.sessionKey !== key || registration.key !== current.key || registration.state !== "pending") continue;
       await this.writeRegistration({ ...registration, cancelledAt: new Date().toISOString(), state: "cancelled" });
     }
+  }
+
+  private async closeAndClaimLocked(key: string, binding: SessionBinding, permanent: boolean, session: SessionRecord | undefined): Promise<RunRecord | undefined> {
+    // A superseded instance may drain only its own generation, never close the current owner.
+    if (permanent || binding.generation === undefined || !session || session.generation === binding.generation) await atomicWrite(this.sessionPath(key), { ...session, ...(permanent ? { deleted: true } : {}), closedAt: new Date().toISOString(), cwd: binding.cwd, host: binding.host, sessionKey: key });
+    // Only the current owner recovers legacy or abandoned records; stale instances must not drain them.
+    return this.claimPendingLocked(key, binding.host, undefined, permanent ? undefined : binding.generation, session?.generation === binding.generation);
   }
 
   private async claimPendingLocked(key: string, host: string, onlyId?: string, generation?: string, recoverOrphans = false): Promise<RunRecord | undefined> {
