@@ -154,9 +154,9 @@ export class ActionStore {
       const run = await this.withSessionLock(key, async () => {
         const session = await this.getSession(key);
         if (mode === "delete") return this.closeAndClaimLocked(key, binding, true, session);
-        const claimed = await this.claimPendingLocked(key, binding.host, undefined, binding.generation, session?.generation === binding.generation);
+        // Write the fence before claiming: a failed fence write must not leave a claimed run that never starts.
         await atomicWrite(this.sessionPath(key), { ...session, archivedSequence: await this.nextSequence(), cwd: binding.cwd, host: binding.host, sessionKey: key });
-        return claimed;
+        return this.claimPendingLocked(key, binding.host, undefined, binding.generation, session?.generation === binding.generation);
       });
       if (run) runs.push(run);
     }
