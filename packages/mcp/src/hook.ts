@@ -13,7 +13,7 @@ interface HookInput {
   tool_response?: unknown;
   tool_calls?: { tool_name?: string; tool_input?: { command?: unknown; content?: unknown; new_string?: unknown; newString?: unknown } }[];
   tool_output?: unknown;
-  extra?: { result?: unknown; reason?: unknown };
+  extra?: { result?: unknown; reason?: unknown; deleted_ids?: unknown };
 }
 
 function detectHost(input: HookInput): string {
@@ -104,10 +104,16 @@ async function main(): Promise<void> {
     return;
   }
   // Hermes archives by hiding the row, not by ending the session, and it can unarchive and resume the same ID: drain
-  // now but leave ownership open. A real delete or prune closes the session for good.
+  // now but leave ownership open. A real delete or prune closes the session for good. Bulk prune and cascade deletes
+  // report every removed ID, so one event must not strand the other sessions' cleanup.
   if (input.hook_event_name === "on_session_delete") {
-    const run = input.extra?.reason === "archive" ? await store.drainPending(binding) : await store.closeAndClaim(binding, true);
-    if (run) await startRun(root, run);
+    const archived = input.extra?.reason === "archive";
+    const extraIds = Array.isArray(input.extra?.deleted_ids) ? input.extra.deleted_ids : [];
+    for (const sessionId of new Set([input.session_id, ...extraIds.filter((id): id is string => typeof id === "string" && id.length > 0)])) {
+      const target: SessionBinding = { ...binding, sessionId };
+      const run = archived ? await store.drainPending(target) : await store.closeIfTracked(target, true);
+      if (run) await startRun(root, run);
+    }
   }
 }
 
