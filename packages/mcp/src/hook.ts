@@ -107,13 +107,9 @@ async function main(): Promise<void> {
   // now but leave ownership open. A real delete or prune closes the session for good. Bulk prune and cascade deletes
   // report every removed ID, so one event must not strand the other sessions' cleanup.
   if (input.hook_event_name === "on_session_delete") {
-    const archived = input.extra?.reason === "archive";
     const extraIds = Array.isArray(input.extra?.deleted_ids) ? input.extra.deleted_ids : [];
-    for (const sessionId of new Set([input.session_id, ...extraIds.filter((id): id is string => typeof id === "string" && id.length > 0)])) {
-      const target: SessionBinding = { ...binding, sessionId };
-      const run = archived ? await store.drainPending(target) : await store.closeIfTracked(target, true);
-      if (run) await startRun(root, run);
-    }
+    const ids = [...new Set([input.session_id, ...extraIds.filter((id): id is string => typeof id === "string" && id.length > 0)])];
+    for (const run of await store.settle(ids.map((sessionId) => ({ ...binding, sessionId })), input.extra?.reason === "archive" ? "archive" : "delete")) await startRun(root, run);
   }
 }
 

@@ -136,32 +136,31 @@ export class ActionStore {
     return this.withSessionLock(key, async () => this.closeAndClaimLocked(key, binding, permanent, await this.getSession(key)));
   }
 
-  // Claim a session's pending cleanup without closing ownership: Hermes hides an archived row instead of ending the
-  // session, and it can unarchive and resume the same session ID, so closing here would make the next registration
-  // run on bind. Recording the archive point lets a registration created before it but bound after it still run, while
-  // a session with no state at all stays untouched — a bulk event must not leave a record per session.
-  async drainPending(binding: SessionBinding): Promise<RunRecord | undefined> {
+  // Claim sessions that Hermes archived or removed. Archive keeps ownership open, so it records the archive point and
+  // a registration created before it still runs when its own hook binds afterwards; delete and prune close ownership
+  // permanently. One registration scan serves the whole event: a bulk prune arrives as a single on_session_delete with
+  // a three-second hook budget, and rescanning per session would exhaust it before the last ID. Sessions that carry no
+  // cleanup state and no provisional registration are skipped, so a sweep over never-used sessions leaves nothing.
+  async settle(bindings: SessionBinding[], mode: "archive" | "delete"): Promise<RunRecord[]> {
     await this.init();
-    const key = sessionKey(binding.host, binding.sessionId);
-    return this.withSessionLock(key, async () => {
-      const session = await this.getSession(key);
-      const archivedSequence = await this.nextSequence();
-      const run = await this.claimPendingLocked(key, binding.host, undefined, binding.generation, session?.generation === binding.generation);
-      if (session || run) await atomicWrite(this.sessionPath(key), { ...session, archivedSequence, cwd: binding.cwd, host: binding.host, sessionKey: key });
-      return run;
-    });
-  }
-
-  // Delete and prune arrive in bulk from Hermes, and most of those sessions never registered cleanup: close the ones
-  // that carry state instead of leaving a tombstone per removed session.
-  async closeIfTracked(binding: SessionBinding, permanent = false): Promise<RunRecord | undefined> {
-    await this.init();
-    const key = sessionKey(binding.host, binding.sessionId);
-    return this.withSessionLock(key, async () => {
-      const session = await this.getSession(key);
-      const tracked = Boolean(session) || (await this.list()).some((registration) => registration.sessionKey === key);
-      return tracked ? this.closeAndClaimLocked(key, binding, permanent, session) : undefined;
-    });
+    const registrations = bindings.length === 0 ? [] : await this.list();
+    const trackedKeys = new Set(registrations.map(({ sessionKey }) => sessionKey));
+    // A provisional registration has no session key yet: its bind may still arrive, so it keeps every listed session.
+    const unbound = registrations.some(({ state }) => state === "provisional");
+    const runs: RunRecord[] = [];
+    for (const binding of bindings) {
+      const key = sessionKey(binding.host, binding.sessionId);
+      if (!(trackedKeys.has(key) || unbound || (await this.getSession(key)))) continue;
+      const run = await this.withSessionLock(key, async () => {
+        const session = await this.getSession(key);
+        if (mode === "delete") return this.closeAndClaimLocked(key, binding, true, session);
+        const claimed = await this.claimPendingLocked(key, binding.host, undefined, binding.generation, session?.generation === binding.generation);
+        await atomicWrite(this.sessionPath(key), { ...session, archivedSequence: await this.nextSequence(), cwd: binding.cwd, host: binding.host, sessionKey: key });
+        return claimed;
+      });
+      if (run) runs.push(run);
+    }
+    return runs;
   }
 
   async cancel(id: string): Promise<CancelResult> {

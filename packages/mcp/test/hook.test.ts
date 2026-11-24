@@ -176,12 +176,17 @@ describe("portable lifecycle hook", () => {
     await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "archive" } });
     await bind(raced.id);
     expect((await store.get(raced.id)).state).toBe("succeeded");
+    // A registration created but not yet bound when the archive lands still runs when its own bind arrives.
+    const unbound = await run("unbound");
+    await runHook(root, { ...common, hook_event_name: "on_session_delete", extra: { reason: "archive" } });
+    await bind(unbound.id);
+    expect((await store.get(unbound.id)).state).toBe("succeeded");
     // Unarchiving keeps the session ID: a later registration stays pending instead of running on bind.
     const resumed = await run("finalize");
     await bind(resumed.id);
     expect((await store.get(resumed.id)).state).toBe("pending");
     await runHook(root, { ...common, hook_event_name: "on_session_finalize" });
-    expect((await readFile(output, "utf8")).replaceAll("\r\n", "\n")).toBe("archive\nraced\nfinalize\n");
+    expect((await readFile(output, "utf8")).replaceAll("\r\n", "\n")).toBe("archive\nraced\nunbound\nfinalize\n");
   });
 
   test("drains every session a bulk Hermes delete reports", async () => {
