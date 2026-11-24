@@ -238,10 +238,10 @@ describe("portable lifecycle hook", () => {
       await runHook(root, { ...session(name), hook_event_name: "post_tool_call", tool_name: "mcp__atexit__atexit_register", extra: { result: JSON.stringify({ registration_id: registration.id }) } });
       registrations.push(registration);
     }
-    // Hold the second session's lock: settling it times out, but the first run must already be handed off.
+    // Corrupt the second session's record so settling it fails, while the first run must already be handed off.
     const { createHash } = await import("node:crypto");
-    await mkdir(join(root, "locks", `session-${createHash("sha256").update("hermes\0second").digest("hex")}`));
-    await expect(runHook(root, { ...session("first"), hook_event_name: "on_session_delete", extra: { reason: "prune", deleted_ids: ["first", "second"] } })).rejects.toThrow(/timed out waiting for lock/);
+    await writeFile(join(root, "sessions", `${createHash("sha256").update("hermes\0second").digest("hex")}.json`), "{");
+    await expect(runHook(root, { ...session("first"), hook_event_name: "on_session_delete", extra: { reason: "prune", deleted_ids: ["first", "second"] } })).rejects.toThrow(/JSON|Unexpected end/i);
     expect(await readFile(output, "utf8")).toBe("first\n");
     expect((await store.get(registrations[0]!.id)).state).toBe("succeeded");
     expect((await store.get(registrations[1]!.id)).state).toBe("pending");
